@@ -25,17 +25,17 @@
             <h2 id="roadbook-heading">我的路书</h2>
             <button class="button secondary roadbook-new" type="button" id="new-roadbook" aria-label="新建路线" disabled><span data-icon="plus"></span>新建</button>
           </div>
-          <p id="roadbook-empty" class="roadbook-empty">保存路线后，可在这里查看和管理。</p>
+          <p id="roadbook-empty" class="roadbook-empty">点击「新建」开始规划路线。</p>
           <ul id="roadbook-list" class="roadbook-list"></ul>
-          <button type="button" class="button secondary roadbook-draft" id="resume-draft" hidden>返回路线草稿</button>
           <div id="roadbook-details" class="roadbook-details" hidden>
-            <dl class="metrics">
+            <dl class="metrics" id="roadbook-metrics">
               <div><dt>里程</dt><dd id="distance">—</dd></div>
               <div><dt>预估爬升</dt><dd id="climb">—</dd></div>
               <div><dt>预计用时</dt><dd id="duration">—</dd></div>
             </dl>
-            <dl class="roadbook-endpoints" id="roadbook-endpoints" hidden>
+            <dl class="roadbook-stops" id="roadbook-stops" hidden>
               <div><dt>起点</dt><dd id="roadbook-start"></dd></div>
+              <div id="roadbook-via" hidden><dt>途经</dt><dd><ol id="roadbook-via-list"></ol></dd></div>
               <div><dt>终点</dt><dd id="roadbook-end"></dd></div>
             </dl>
             <p class="roadbook-status" id="roadbook-status" hidden></p>
@@ -64,7 +64,7 @@
           <span id="map-credit" class="map-credit">杭州示例路网</span>
         </section>
 
-        <section class="card editor" aria-label="路线编辑区">
+        <section class="card editor" id="route-editor" aria-label="路线编辑区" hidden>
           <div class="editor-tabs" role="tablist" aria-label="编辑方式">
             <button id="ai-tab" type="button" role="tab" aria-selected="true" aria-controls="ai-panel"><span data-icon="spark"></span>AI 对话</button>
             <button id="manual-tab" type="button" role="tab" aria-selected="false" aria-controls="manual-panel" tabindex="-1"><span data-icon="edit"></span>手动编辑</button>

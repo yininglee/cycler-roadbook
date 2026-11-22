@@ -165,10 +165,11 @@ export function offlineMap(canvas, onPick) {
   return {
     render(next) { state = next; draw(); },
     zoom(delta) { zoom = Math.max(0.55, Math.min(4, zoom * (delta === 1 ? 1.28 : 0.78))); draw(); },
+    centerOn(coords) { focus = [...coords]; draw(); },
     select(active) { canvas.classList.toggle('can-select', active); },
     fit() {
       const points = state.geometry.length ? state.geometry : state.points.map(point => point.coords);
-      if (!points.length) { focus = [...center]; zoom = 1; draw(); return; }
+      if (!points.length) return;
       const longitudes = points.map(point => point[0]);
       const latitudes = points.map(point => point[1]);
       const xMin = Math.min(...longitudes), xMax = Math.max(...longitudes);
@@ -192,7 +193,7 @@ export async function liveMap(element, key, onPick) {
     script.onerror = () => { clearTimeout(timeout); reject(new Error('高德底图加载失败。')); };
     document.head.append(script);
   });
-  const map = new sdk.Map(element, { viewMode: '2D', zoom: 12, center, mapStyle: 'amap://styles/normal' });
+  const map = new sdk.Map(element, { viewMode: '2D', zoom: 12, center, mapStyle: 'amap://styles/normal', resizeEnable: true });
   let overlays = [];
   map.on('click', event => onPick({
     id: `map-${event.lnglat.lng.toFixed(6)}-${event.lnglat.lat.toFixed(6)}`,
@@ -201,6 +202,7 @@ export async function liveMap(element, key, onPick) {
   return {
     select(active) { map.setDefaultCursor(active ? 'crosshair' : 'grab'); },
     zoom(delta) { map.setZoom(map.getZoom() + delta); },
+    centerOn(coords) { map.setZoomAndCenter(15, coords, true); },
     fit() { if (overlays.length) map.setFitView(overlays, false, [65,70,65,70], 16); },
     render({ geometry, points, preview }) {
       if (overlays.length) map.remove(overlays);

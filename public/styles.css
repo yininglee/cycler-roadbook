@@ -31,6 +31,7 @@ h1{font-size:clamp(30px,3vw,44px);font-weight:830;line-height:1.12;letter-spacin
 .secondary{border-color:var(--line);background:var(--surface)}
 .secondary:hover:not(:disabled),.icon-button:hover:not(:disabled){background:#f2f2f3}
 .workspace{display:grid;grid-template-columns:minmax(218px,.74fr) minmax(0,2.02fr) minmax(324px,1.19fr);gap:14px;align-items:stretch}
+@media(min-width:721px){.map-card:has(+.editor[hidden]){grid-column:span 2}}
 .card,.map-card{min-width:0;border:1px solid var(--line);border-radius:22px;background:var(--surface);box-shadow:var(--shadow)}
 .map-card{position:relative;isolation:isolate;height:var(--work-height);overflow:hidden;background:#e8ebe1}
 .live-map,#demo-map{position:absolute;width:100%;height:100%;inset:0}
@@ -60,7 +61,6 @@ h1{font-size:clamp(30px,3vw,44px);font-weight:830;line-height:1.12;letter-spacin
 .roadbook-new{padding:0 9px;min-height:34px;font-size:12px}
 .roadbook-new svg,.roadbook-actions svg{width:14px;height:14px}
 .roadbook-empty{padding:12px 8px;color:var(--muted);font-size:13px}
-.roadbook-draft{width:100%;margin-top:10px;font-size:13px;min-height:36px}
 .roadbook-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .roadbook{min-width:0;border:1px solid transparent;border-radius:13px}
 .roadbook.current{background:#f2f6f0;border-color:#d5e2d2}
@@ -77,10 +77,11 @@ h1{font-size:clamp(30px,3vw,44px);font-weight:830;line-height:1.12;letter-spacin
 .roadbook-chevron svg{width:14px;height:14px}
 .roadbook-select[aria-expanded=true] .roadbook-chevron{transform:rotate(180deg)}
 .roadbook-details{margin:0 8px;padding:9px 0 7px;border-top:1px solid #dae5d7}
-.roadbook-endpoints{display:grid;gap:4px;margin:9px 0;font-size:12px}
-.roadbook-endpoints>div{display:grid;grid-template-columns:2.6em minmax(0,1fr);gap:5px}
-.roadbook-endpoints dt,.roadbook-status{color:var(--muted)}
-.roadbook-endpoints dd{overflow-wrap:anywhere}
+.roadbook-stops{display:grid;gap:4px;margin:9px 0;font-size:12px}
+.roadbook-stops>div{display:grid;grid-template-columns:2.6em minmax(0,1fr);gap:5px}
+.roadbook-stops dt,.roadbook-status{color:var(--muted)}
+.roadbook-stops dd{overflow-wrap:anywhere}
+.roadbook-stops ol{display:grid;gap:2px;padding:0;list-style:none}
 .roadbook-status{font-size:12px;margin-top:7px}
 .roadbook-actions{display:flex;flex-wrap:wrap;gap:3px;margin:6px -3px 0}
 .roadbook-actions button{font-size:12px;font-weight:650;gap:4px;padding:2px 6px;border:0;border-radius:7px;min-height:32px;background:transparent;color:#3e5442}

@@ -1,4 +1,3 @@
-import { demoPlaces, demoPresets } from './demo.js';
 import { offlineMap, liveMap } from './map.js';
 
 const icons = {
@@ -22,11 +21,11 @@ const $ = id => document.getElementById(id);
 document.querySelectorAll('[data-icon]').forEach(node => { node.innerHTML = glyph(node.dataset.icon); });
 
 const state = {
-  config: null, map: null, points: [], loop: false, name: '我的骑行路书',
+  config: null, map: null, points: [], loop: false, name: '',
   active: null, pending: false, routeError: '', previousView: false, editIndex: null, choosing: false,
-  revision: 0, routeRequest: 0, searchRequest: 0, planning: false, download: false,
+  revision: 0, searchRequest: 0, planning: false,
   turns: [], preview: null, context: null, appliedContext: null,
-  roadbooks: [], roadbook: null, draft: null, expanded: true, panel: 'ai', dirty: false,
+  roadbooks: [], roadbook: null, panel: 'ai', dirty: false,
 };
 const item = (tag, className, label) => {
   const node = document.createElement(tag);
@@ -86,34 +85,29 @@ function renderRoadbooks() {
   const details = $('roadbook-details');
   const list = $('roadbook-list');
   list.after(details);
-  details.hidden = !state.expanded;
+  details.hidden = !state.roadbook;
   $('roadbook-empty').hidden = state.roadbooks.length > 0;
-  $('resume-draft').hidden = state.draft === state.roadbook || !hasDraftContent(state.draft);
   const rows = state.roadbooks.map(book => {
     const current = book === state.roadbook;
-    const saved = book.saved;
+    const { name, loop, points } = book.saved ?? (current ? state : book);
     const row = item('li', current ? 'roadbook current' : 'roadbook');
     const select = action('', 'roadbook-select', () => {
-      if (current) {
-        state.expanded = !state.expanded;
-        details.hidden = !state.expanded;
-        select.setAttribute('aria-expanded', state.expanded);
-      } else {
-        openRoadbook(book);
-        document.querySelector('.roadbook-select[aria-current=true]')?.focus({ preventScroll: true });
-      }
+      openRoadbook(current ? null : book);
+      persistRoadbooks();
+      list.children[state.roadbooks.indexOf(book)]?.firstElementChild.focus({ preventScroll: true });
     });
-    select.setAttribute('aria-expanded', current && state.expanded);
+    select.setAttribute('aria-expanded', current);
     if (current) {
       select.setAttribute('aria-current', 'true');
-      select.setAttribute('aria-controls', details.id);
+      select.setAttribute('aria-controls', details.id + ' route-editor');
+      select.title = '取消选择';
     }
     const icon = item('span', 'roadbook-icon');
     icon.dataset.icon = '';
     icon.innerHTML = glyph('book');
     const label = item('span', 'roadbook-text');
-    const type = saved.loop ? '环线' : '单程';
-    label.append(item('strong', '', saved.name), item('small', '', `${type} · ${saved.points.length} 个点位`));
+    const subtitle = points.length ? `${loop ? '环线' : '单程'} · ${points.length} 个点位` : '空白路线';
+    label.append(item('strong', '', name), item('small', '', subtitle));
     const arrow = item('span', 'roadbook-chevron');
     arrow.dataset.icon = '';
     arrow.innerHTML = glyph('down');
@@ -123,34 +117,36 @@ function renderRoadbooks() {
     return row;
   });
   list.replaceChildren(...rows);
-  if (!state.roadbook?.saved) details.hidden = true;
 }
 
 const roadbookKey = () => 'cycler-roadbooks:' + state.config.mode;
-const newRoadbook = (name, points = []) => ({ id: crypto.randomUUID(), name, points, loop: false, autoName: true });
-const hasDraftContent = draft => Boolean(draft && (draft.points.length || draft.turns?.length || draft.input));
 
-function uniqueRoadbookName(base) {
-  const names = new Set(state.roadbooks.map(book => book.saved.name));
+function uniqueRoadbookName(base, except = null) {
+  const names = new Set(state.roadbooks.filter(book => book !== except).map(book => book.saved?.name ?? book.name));
   let name = base;
   for (let index = 2; names.has(name); index++) name = base + ' ' + index;
   return name;
 }
 
-function cacheDraft() {
+function cacheEditor() {
   if (!state.roadbook) return;
   Object.assign(state.roadbook, {
     name: state.name, points: [...state.points], loop: state.loop, dirty: state.dirty,
-    active: state.active, needsRoute: state.pending, routeError: state.routeError, revision: state.revision,
+    active: state.active, pending: state.pending, routeError: state.routeError, revision: state.revision,
     turns: state.turns, context: state.context, appliedContext: state.appliedContext, input: $('agent-input').value,
+    panel: state.panel, planning: state.planning, preview: state.preview, previousView: state.previousView,
   });
 }
 
 function persistRoadbooks() {
   try {
-    const books = state.roadbooks.map(({ id, saved: { name, points, loop, appliedContext, supplyPoints } }) =>
-      ({ id, name, points, loop, appliedContext, supplyPoints }));
-    localStorage.setItem(roadbookKey(), JSON.stringify({ books, selected: state.roadbook.id }));
+    const books = state.roadbooks.map(book => {
+      const { id, saved } = book;
+      if (!saved) return { id, name: book.name, points: [], loop: false, autoName: book.autoName };
+      const { name, points, loop, appliedContext, supplyPoints } = saved;
+      return { id, name, points, loop, appliedContext, supplyPoints };
+    });
+    localStorage.setItem(roadbookKey(), JSON.stringify({ books, selected: state.roadbook?.id ?? null }));
     return true;
   } catch {
     return false;
@@ -163,84 +159,87 @@ function commitRoadbook() {
   if (book.autoName && !book.saved) {
     const start = state.points[0].name;
     const end = state.loop ? '环线' : '到' + state.points.at(-1).name;
-    state.name = uniqueRoadbookName(start + end);
+    state.name = uniqueRoadbookName(start + end, book);
   }
   state.dirty = false;
-  cacheDraft();
-  if (!book.saved) state.roadbooks.unshift(book);
+  cacheEditor();
   const { name, points, loop, active, appliedContext } = book;
   book.saved = { name, points, loop, route: active, appliedContext, supplyPoints: active.supplyPoints };
-  if (state.draft === book) state.draft = null;
-  state.expanded = true;
   renderRoadbooks();
   toast(persistRoadbooks() ? '路书已保存。' : '已保存到当前页面。浏览器存储不可用。');
 }
 
-function loadRoadbooks(demo) {
+function loadRoadbooks() {
   let saved;
   try { saved = JSON.parse(localStorage.getItem(roadbookKey())); } catch {}
   state.roadbooks = Array.isArray(saved?.books) ? saved.books.filter(book => typeof book?.id === 'string' &&
-    typeof book.name === 'string' && Array.isArray(book.points) && book.points.length >= 2)
-    .map(book => ({ ...book, saved: book })) : [];
-  const book = state.roadbooks.find(book => book.id === saved?.selected) ?? state.roadbooks[0];
-  const points = demo ? demoPresets.scenic.map(id => demoPlaces.find(place => place.id === id)) : [];
-  openRoadbook(book ?? newRoadbook(demo ? '西湖到钱塘江' : '未命名路线', points));
+    typeof book.name === 'string' && Array.isArray(book.points) && book.points.length !== 1)
+    .map(book => book.points.length ? { ...book, saved: book } : { ...book, autoName: book.autoName ?? true }) : [];
+  openRoadbook(state.roadbooks.find(book => book.id === saved?.selected) ?? null);
 }
 
 function openRoadbook(book) {
-  cancelPlanning('已切换路书，本轮规划已结束。');
-  cacheDraft();
-  if (!book.saved) state.draft = book;
-  state.routeRequest++;
+  cacheEditor();
   state.searchRequest++;
-  const needsRoute = book.points.length > 1 && (book.needsRoute || !book.active && !book.routeError);
+  const needsRoute = book?.points.length > 1 && !book.routeRequest && !book.active && !book.routeError;
   Object.assign(state, {
-    roadbook: book, expanded: true, dirty: book.dirty ?? !book.saved,
-    name: book.name, points: [...book.points], loop: book.loop === true,
-    revision: book.revision ?? 0, active: book.active ?? null, routeError: book.routeError ?? '', pending: needsRoute,
-    turns: book.turns ?? [], context: book.context ?? book.appliedContext ?? null, appliedContext: book.appliedContext ?? null,
-    editIndex: null, choosing: false, previousView: false,
+    roadbook: book, dirty: book?.dirty ?? false,
+    name: book?.name ?? '', points: [...(book?.points ?? [])], loop: book?.loop === true,
+    revision: book?.revision ?? 0, active: book?.active ?? null, routeError: book?.routeError ?? '', pending: book?.pending ?? needsRoute,
+    turns: book?.turns ?? [], context: book?.context ?? book?.appliedContext ?? null, appliedContext: book?.appliedContext ?? null,
+    editIndex: null, choosing: false, previousView: book?.previousView ?? false,
+    planning: book?.planning ?? false, preview: book?.preview ?? null, panel: book?.panel ?? 'ai',
   });
   $('search-results').hidden = true;
   $('search-input').value = '';
-  $('agent-input').value = book.input ?? '';
-  cacheDraft();
-  if (book.saved) persistRoadbooks();
+  $('agent-input').value = book?.input ?? '';
+  $('route-editor').hidden = !book;
+  renderEditorTabs();
   renderRoadbooks(); renderPlan(true); renderRoute();
   if (needsRoute) calculateRoute();
   else state.map?.fit();
 }
 
-function showEditor(panel) {
-  state.panel = panel;
+function renderEditorTabs() {
   for (const name of ['ai', 'manual']) {
-    const selected = name === panel;
+    const selected = name === state.panel;
     const tab = $(name + '-tab');
     tab.setAttribute('aria-selected', selected);
     tab.tabIndex = selected ? 0 : -1;
     $(name + '-panel').hidden = !selected;
   }
+}
+
+function showEditor(panel) {
+  state.panel = panel;
+  renderEditorTabs();
   if (panel === 'manual' && state.preview) showPreview(null, null);
   else if (panel === 'ai') renderPlan(true);
 }
 
 function renderRoadbookDetails() {
-  const saved = state.roadbook?.saved;
+  const book = state.roadbook;
+  const saved = book?.saved;
   const current = saved?.route;
   const points = saved?.points ?? [];
+  $('roadbook-metrics').hidden = !saved;
   metric('distance', current ? asKm(current.distance) : '—', current ? 'km' : '');
   metric('climb', current?.climb == null ? '—' : Math.round(current.climb), current?.climb == null ? '' : 'm');
   const minutes = current?.duration == null ? null : Math.round(current.duration / 60);
   metric('duration', minutes === null ? '—' : minutes >= 60 ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}` : minutes,
     minutes === null ? '' : minutes >= 60 ? 'h' : 'min');
-  $('roadbook-endpoints').hidden = !points.length;
+  const via = points.slice(1, saved?.loop ? undefined : -1);
+  $('roadbook-stops').hidden = !points.length;
   $('roadbook-start').textContent = points[0]?.name ?? '';
+  $('roadbook-via').hidden = !via.length;
+  $('roadbook-via-list').replaceChildren(...via.map(point => item('li', '', pointLabel(point))));
   $('roadbook-end').textContent = saved?.loop ? '返回起点' : points.at(-1)?.name ?? '';
   const status = $('roadbook-status');
-  status.textContent = state.dirty ? '有未保存的修改' : state.pending ? '正在加载路线…' :
+  status.textContent = saved && state.dirty ? '有未保存的修改' : state.pending ? '正在加载路线…' :
     state.routeError ? '路线待调整' : current?.climb === null ? '爬升待核实' : '';
   status.hidden = !status.textContent;
-  $('export').disabled = state.download || !saved;
+  $('export').hidden = !saved;
+  $('export').disabled = Boolean(book?.download);
 }
 
 function renderRoute() {
@@ -299,8 +298,9 @@ function renderRoute() {
     pointList.append(row);
   });
   state.map?.render({ geometry: route?.geometry ?? [], points, preview: Boolean(candidate), loop });
-  state.map?.select(!candidate && (state.choosing || !points.length));
-  const message = state.choosing ? (state.editIndex === null ? '在地图上选点，或搜索地点' : '请选择点位的新位置') :
+  state.map?.select(Boolean(state.roadbook) && !candidate && (state.choosing || points.length < 2));
+  const message = !state.roadbook ? '选择或新建路线后可在地图上选点' :
+    state.choosing ? (state.editIndex === null ? '在地图上选点，或搜索地点' : '请选择点位的新位置') :
     candidate ? '正在预览候选路线' :
     state.pending ? '正在更新骑行路线' :
     state.routeError && !state.previousView ? '路线待调整' :
@@ -308,17 +308,17 @@ function renderRoute() {
     points.length === 1 ? '请添加下一个路线点' : '可在右侧调整路线点位';
   $('map-message').textContent = state.map || state.config?.mode !== 'amap' ? message : '高德底图暂不可用，可搜索地点';
 }
-function cancelPlanning(message = '草稿已更新，本轮规划已结束。') {
+function cancelPlanning() {
   const turn = state.turns.at(-1);
   if (turn?.pending) {
     turn.pending = false;
-    turn.result = { question: message };
+    turn.result = { question: '草稿已更新，本轮规划已结束。' };
   }
   state.planning = false;
   state.preview = null;
 }
 function choosePoint(index = null) {
-  if (!state.config || state.previousView) return;
+  if (!state.roadbook || state.previousView) return;
   state.choosing = true;
   state.editIndex = index;
   renderRoute();
@@ -326,7 +326,14 @@ function choosePoint(index = null) {
   $('search-input').focus({ preventScroll: true });
 }
 function pickPoint(point, fromSearch = false) {
-  if (!state.config || state.previousView || state.preview || (!fromSearch && !state.choosing && state.points.length >= 2)) return;
+  if (!state.roadbook) {
+    if (fromSearch) {
+      $('search-results').hidden = true;
+      state.map?.centerOn(point.coords);
+    }
+    return;
+  }
+  if (state.previousView || state.preview || (!fromSearch && !state.choosing && state.points.length >= 2)) return;
   if (state.editIndex !== null) {
     state.points[state.editIndex] = point;
   } else {
@@ -346,6 +353,8 @@ function movePoint(index, delta) {
   updateRoute();
 }
 async function updateRoute() {
+  const book = state.roadbook;
+  if (!book) return;
   if (!state.context?.waitingFor) {
     if (state.appliedContext) {
       state.appliedContext = { intent: {
@@ -364,34 +373,39 @@ async function updateRoute() {
   state.previousView = false;
   state.pending = state.points.length > 1;
   if (!state.pending) state.active = null;
-  cacheDraft();
-  renderPlan(); renderRoute();
+  renderRoadbooks(); renderPlan(); renderRoute();
   if (state.pending) await calculateRoute();
   else {
-    state.routeRequest++;
+    book.routeRequest = null;
     state.map?.fit();
   }
 }
 
 async function calculateRoute() {
-  const request = ++state.routeRequest;
+  const book = state.roadbook;
+  const request = Symbol();
+  book.routeRequest = request;
+  let result;
+  let routeError = '';
   try {
-    const result = await api('/api/route', { points: state.points, loop: state.loop });
-    if (request !== state.routeRequest) return;
-    state.active = state.roadbook.saved && !state.dirty
-      ? { ...result, supplyPoints: state.roadbook.saved.supplyPoints } : result;
-    state.pending = false;
-    state.routeError = '';
-    if (state.roadbook.saved && !state.dirty) state.roadbook.saved.route = state.active;
-    cacheDraft();
-    renderPlan(); renderRoute();
-    state.map?.fit();
+    result = await api('/api/route', { points: state.points, loop: state.loop });
   } catch (error) {
-    if (request !== state.routeRequest) return;
-    state.pending = false;
-    state.routeError = error.message;
-    cacheDraft();
+    routeError = error.message;
+  }
+  if (request !== book.routeRequest) return;
+  book.routeRequest = null;
+  const editor = state.roadbook === book ? state : book;
+  editor.pending = false;
+  editor.routeError = routeError;
+  if (result) {
+    if (book.saved && !editor.dirty) {
+      book.saved.route = { ...result, supplyPoints: book.saved.supplyPoints };
+    }
+    editor.active = book.saved && !editor.dirty ? book.saved.route : result;
+  }
+  if (editor === state) {
     renderPlan(); renderRoute();
+    if (result) state.map?.fit();
   }
 }
 async function search(event) {
@@ -513,7 +527,7 @@ function renderPlan(follow = false) {
   const latest = state.turns.at(-1);
   const scrollTop = log.scrollTop;
   log.replaceChildren();
-  $('plan-button').disabled = !state.config || state.planning || state.pending || state.previousView;
+  $('plan-button').disabled = !state.roadbook || state.planning || state.pending || state.previousView;
   $('prompts').hidden = Boolean(latest);
   log.hidden = !latest;
   const target = $('agent-target');
@@ -570,7 +584,8 @@ function renderPlan(follow = false) {
 }
 
 async function runPlan(query, continuation = null) {
-  if (!state.config || state.pending || state.previousView || state.planning) return;
+  const book = state.roadbook;
+  if (!book || state.pending || state.previousView || state.planning) return;
   const base = continuation?.base ?? conversationBase();
   const history = state.turns.slice(-6).map(turn => ({
     prompt: turn.prompt, reply: turn.result?.question,
@@ -581,32 +596,32 @@ async function runPlan(query, continuation = null) {
   state.turns.push(turn);
   state.planning = true;
   renderPlan(true); renderRoute();
+  let result;
+  let failed = false;
   try {
-    const result = await api('/api/plan', {
+    result = await api('/api/plan', {
       ...base, prompt: query, resume: turn.resume, history,
     });
-    if (!turn.pending) return;
-    turn.result = result;
-    state.context = result.context;
-    const candidates = turn.result.candidates;
-    if (candidates?.length && state.panel === 'ai') {
-      const usable = candidates.findIndex(route => route.canApply);
-      if (state.preview) state.preview.turn.expanded = false;
-      state.preview = { turn, index: Math.max(0, usable) };
-      state.choosing = false;
-      state.editIndex = null;
-    }
   } catch (error) {
-    if (!turn.pending) return;
-    turn.result = { question: error.message };
-    turn.failed = true;
-  } finally {
-    if (turn.pending) {
-      turn.pending = false;
-      state.planning = false;
-      renderPlan(true); renderRoute();
-      if (state.preview?.turn === turn) state.map?.fit();
-    }
+    result = { question: error.message };
+    failed = true;
+  }
+  if (!turn.pending) return;
+  const editor = state.roadbook === book ? state : book;
+  Object.assign(turn, { result, failed, pending: false });
+  editor.planning = false;
+  if (!failed) editor.context = result.context;
+  const candidates = result.candidates;
+  if (candidates?.length && editor.panel === 'ai') {
+    const usable = candidates.findIndex(route => route.canApply);
+    if (editor.preview) editor.preview.turn.expanded = false;
+    editor.preview = { turn, index: Math.max(0, usable) };
+    editor.choosing = false;
+    editor.editIndex = null;
+  }
+  if (editor === state) {
+    renderPlan(true); renderRoute();
+    if (state.preview?.turn === turn) state.map?.fit();
   }
 }
 function dialog(title, label, confirm) {
@@ -620,8 +635,8 @@ function dialog(title, label, confirm) {
   element.showModal();
   return content;
 }
-async function download(route, name) {
-  state.download = true; renderRoute();
+async function download(book, route, name) {
+  book.download = true; renderRoadbookDetails();
   try {
     const response = await request('/api/export', { ...routeFrom(route), name });
     const url = URL.createObjectURL(await response.blob());
@@ -632,7 +647,10 @@ async function download(route, name) {
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     toast('已生成演示 GPX 文件。');
   } catch (error) { toast(error.message); }
-  finally { state.download = false; renderRoute(); }
+  finally {
+    book.download = false;
+    if (book === state.roadbook) renderRoadbookDetails();
+  }
 }
 
 $('search-form').addEventListener('submit', search);
@@ -644,15 +662,11 @@ $('add-point').addEventListener('click', () => {
 });
 $('loop').addEventListener('change', () => { state.loop = $('loop').checked; updateRoute(); });
 $('new-roadbook').addEventListener('click', () => {
-  cacheDraft();
-  const create = () => openRoadbook(newRoadbook('未命名路线'));
-  if (hasDraftContent(state.draft)) {
-    dialog('新建路线', '新建', create).textContent = '未保存的路线草稿将被替换。';
-  } else {
-    create();
-  }
+  const book = { id: crypto.randomUUID(), name: uniqueRoadbookName('未命名路线'), points: [], loop: false, autoName: true };
+  state.roadbooks.unshift(book);
+  openRoadbook(book);
+  if (!persistRoadbooks()) toast('已在当前页面新建路线。浏览器存储不可用。');
 });
-$('resume-draft').addEventListener('click', () => openRoadbook(state.draft));
 $('edit-roadbook').addEventListener('click', () => {
   showEditor('manual');
   $('manual-tab').focus();
@@ -664,21 +678,29 @@ $('save-roadbook').addEventListener('click', () => {
 $('delete-roadbook').addEventListener('click', () => {
   const book = state.roadbook;
   dialog('删除路书', '删除', () => {
+    if (state.roadbook !== book) return;
+    cancelPlanning();
+    book.routeRequest = null;
     state.roadbooks = state.roadbooks.filter(entry => entry !== book);
-    openRoadbook(state.roadbooks[0] ?? state.draft ?? newRoadbook('未命名路线'));
+    openRoadbook(null);
+    $('new-roadbook').focus({ preventScroll: true });
     toast(persistRoadbooks() ? '路书已删除。' : '已从当前页面移除。浏览器存储不可用。');
-  }).textContent = `确定删除「${book.saved.name}」？`;
+  }).textContent = `确定删除「${book.saved?.name ?? state.name}」？`;
 });
 $('rename').addEventListener('click', () => {
+  const book = state.roadbook;
   const input = item('input');
   input.value = state.name; input.maxLength = 80; input.setAttribute('aria-label', '路线名称');
   dialog('重命名路线', '确定', () => {
+    if (state.roadbook !== book) return;
     const name = input.value.trim() || state.name;
     if (name !== state.name) {
       state.name = name;
-      state.roadbook.autoName = false;
+      book.autoName = false;
       state.dirty = true;
-      cacheDraft();
+      cacheEditor();
+      if (!book.saved) persistRoadbooks();
+      renderRoadbooks();
       renderRoute();
     }
     $('rename').focus();
@@ -697,13 +719,14 @@ for (const name of ['ai', 'manual']) {
   });
 }
 $('export').addEventListener('click', () => {
-  const saved = state.roadbook?.saved;
+  const book = state.roadbook;
+  const saved = book?.saved;
   if (!saved) return;
   if (state.config.mode !== 'demo') {
     toast('高德路线暂无法导出 GPX，待确认数据授权和坐标方案。');
     return;
   }
-  const content = dialog('导出演示 GPX', '下载 GPX', () => download(saved, saved.name));
+  const content = dialog('导出演示 GPX', '下载 GPX', () => download(book, saved, saved.name));
   content.append(item('p', '', saved.route ? saved.name + ' · ' + asKm(saved.route.distance) + ' km' : saved.name));
   content.append(item('p', '', '用于验证文件导入。示例路网不用于实际导航。'));
 });
@@ -738,7 +761,7 @@ async function initialize() {
     $('live-map').hidden = demo;
     $('footer-note').textContent = demo ? '示例路网与爬升用于体验编辑、规划和 GPX 流程。'
       : '真实路线可用于预览。高德轨迹的 GPX 导出需完成授权和坐标验证。';
-    loadRoadbooks(demo);
+    loadRoadbooks();
     $('new-roadbook').disabled = false;
     if (demo) {
       state.map = offlineMap($('demo-map'), pickPoint);
