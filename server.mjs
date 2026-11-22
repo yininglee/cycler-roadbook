@@ -1,6 +1,8 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { getProvider, servicesConfigured, MapServiceError } from './lib/providers.mjs';
+import { configuredElevationSource } from './lib/elevation.mjs';
+import { ExportRouteError, exportRouterHost, prepareExport, preparedGpx } from './lib/gpx-export.mjs';
 import { buildRoute, demoGpx, normalizePoints, PlanningError } from './lib/planner.mjs';
 import { modelConfigured, ModelServiceError, runAgent } from './lib/agent.mjs';
 import { validPosition } from './lib/geo.mjs';
@@ -56,7 +58,9 @@ async function handle(req, res) {
   if (req.method === 'GET' && url.pathname === '/api/config') {
     return json(res, 200, { mode: provider.kind,
       mapKey: servicesConfigured() ? process.env.AMAP_JS_KEY : null,
-      llm: modelConfigured() });
+      llm: modelConfigured(),
+      elevationSource: provider.kind === 'amap' ? configuredElevationSource() : 'demo',
+      exportRouter: provider.kind === 'amap' ? exportRouterHost() : null });
   }
   if (req.method === 'GET' && url.pathname === '/api/places') {
     const query = url.searchParams.get('q')?.trim().slice(0, 100);
@@ -75,13 +79,22 @@ async function handle(req, res) {
   if (req.method === 'POST' && url.pathname === '/api/plan') {
     return json(res, 200, await runAgent(provider, await readJson(req)));
   }
+  if (req.method === 'POST' && url.pathname === '/api/export/preview') {
+    if (provider.kind !== 'amap') return json(res, 409, { error: '演示路线可直接下载 GPX。' });
+    return json(res, 200, await prepareExport(provider, await readJson(req)));
+  }
   if (req.method === 'POST' && url.pathname === '/api/export') {
-    if (provider.kind !== 'demo') return json(res, 409, { error: '当前轨迹来源的 GPX 导出授权与坐标方案待验证。' });
     const body = await readJson(req);
-    const route = await buildRoute(provider, normalizePoints(body.points), body.loop === true);
-    const name = typeof body.name === 'string' ? body.name.slice(0, 120).replace(/[\x00-\x1F]/g, '') : '骑行路书';
+    let file;
+    if (provider.kind === 'demo') {
+      const route = await buildRoute(provider, normalizePoints(body.points), body.loop === true);
+      const name = typeof body.name === 'string' ? body.name.slice(0, 120).replace(/[\x00-\x1F]/g, '') : '骑行路书';
+      file = demoGpx(name, route.geometry);
+    } else {
+      file = preparedGpx(body.token);
+    }
     res.writeHead(200, { 'Content-Type': 'application/gpx+xml; charset=utf-8', 'Cache-Control': 'no-store' });
-    return res.end(demoGpx(name, route.geometry));
+    return res.end(file);
   }
   const asset = req.method === 'GET' && assets.get(url.pathname);
   if (!asset) return json(res, 404, { error: '页面不存在。' });
@@ -93,6 +106,7 @@ async function handle(req, res) {
 createServer((req, res) => handle(req, res).catch(error => {
   if (res.headersSent) return res.end();
   if (error instanceof PlanningError) return json(res, 422, { error: error.message });
+  if (error instanceof ExportRouteError) return json(res, error.status, { error: error.message });
   if (error instanceof MapServiceError) {
     console.warn('AMap request failed:', error.code);
     return json(res, error.status, { error: error.message });

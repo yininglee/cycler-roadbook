@@ -67,7 +67,7 @@ async function request(path, input) {
   });
   if (!response.ok) {
     const failure = await response.json().catch(() => ({}));
-    throw new Error(failure.error || '服务暂不可用，请重试。');
+    throw Object.assign(new Error(failure.error || '服务暂不可用，请重试。'), { status: response.status });
   }
   return response;
 }
@@ -75,6 +75,10 @@ const api = async (...args) => (await request(...args)).json();
 const asKm = distance => (distance / 1000).toFixed(1);
 const routeFrom = route => ({ points: route.points, loop: route.loop, distance: route.distance, supplyPoints: route.supplyPoints });
 const previewRoute = () => state.preview?.turn.result.candidates[state.preview.index];
+function currentExportReview(book = state.roadbook) {
+  const review = book?.exportReview;
+  return review && review.saved === book.saved ? review : null;
+}
 const destinationOf = route => route.loop ? route.points[0].name : route.points.at(-1).name;
 const pointLabel = point => point.visit === 'checkpoint' ? point.name + '（签到点）' : point.name;
 let toastTimer;
@@ -177,6 +181,7 @@ function commitRoadbook() {
   cacheEditor();
   const { name, points, loop, active, appliedContext } = book;
   book.saved = { name, points, loop, route: active, appliedContext, supplyPoints: active.supplyPoints };
+  book.exportReview = null;
   renderRoadbooks();
   toast(persistRoadbooks() ? '路书已保存。' : '已保存到当前页面。浏览器存储不可用。');
 }
@@ -192,6 +197,7 @@ function loadRoadbooks() {
 
 function openRoadbook(book) {
   cacheEditor();
+  if (state.roadbook && state.roadbook !== book) state.roadbook.exportReview = null;
   state.searchRequest++;
   const needsRoute = book?.points.length > 1 && !book.routeRequest && !book.active && !book.routeError;
   Object.assign(state, {
@@ -251,18 +257,24 @@ function renderRoadbookDetails() {
     state.routeError ? '路线待调整' : current?.climb === null ? '爬升待核实' : '';
   status.hidden = !status.textContent;
   $('export').hidden = !saved;
-  $('export').disabled = Boolean(book?.download);
+  $('export').disabled = Boolean(book?.download || currentExportReview(book));
+  renderExportReview();
 }
 
 function renderRoute() {
   const current = selectedRoute();
-  const candidate = previewRoute();
-  const route = candidate ?? current;
+  const exportReview = currentExportReview();
+  const comparison = exportReview?.geometry ? exportReview : null;
+  const candidate = comparison ? null : previewRoute();
+  const route = comparison ? comparison.saved.route : candidate ?? current;
   $('route-title').textContent = state.name;
+  const draftClimb = $('draft-climb');
+  draftClimb.hidden = route?.climb == null;
+  draftClimb.textContent = draftClimb.hidden ? '' : `预估累计爬升 ${Math.round(route.climb)} m`;
   $('draft-status').textContent = !state.roadbook?.saved ? '路线草稿' : state.dirty ? '有未保存的修改' : '已保存';
-  $('search-form').querySelectorAll('input, button').forEach(control => { control.disabled = Boolean(candidate); });
+  $('search-form').querySelectorAll('input, button').forEach(control => { control.disabled = Boolean(candidate || comparison); });
   $('loop').checked = candidate?.loop ?? (state.previousView ? state.active.loop : state.loop);
-  const readOnly = state.previousView || Boolean(candidate);
+  const readOnly = state.previousView || Boolean(candidate || comparison);
   $('loop').disabled = !state.config || readOnly;
   $('add-point').hidden = Boolean(candidate);
   $('add-point').disabled = !state.config || state.points.length >= 12 || readOnly;
@@ -283,8 +295,8 @@ function renderRoute() {
   note.hidden = !note.hasChildNodes();
 
   const pointList = $('points');
-  const points = candidate?.points ?? (state.previousView ? state.active.points : state.points);
-  const loop = candidate?.loop ?? (state.previousView ? state.active.loop : state.loop);
+  const points = comparison?.saved.points ?? candidate?.points ?? (state.previousView ? state.active.points : state.points);
+  const loop = comparison?.saved.loop ?? candidate?.loop ?? (state.previousView ? state.active.loop : state.loop);
   pointList.replaceChildren();
   if (!points.length) pointList.append(item('li', 'point-empty', '先在地图上选择起点。'));
   points.forEach((point, index) => {
@@ -309,10 +321,10 @@ function renderRoute() {
     }
     pointList.append(row);
   });
-  state.map?.render({ geometry: route?.geometry ?? [], points, preview: Boolean(candidate), loop });
+  state.map?.render({ geometry: route?.geometry ?? [], points, preview: Boolean(candidate), loop, alternateGeometry: comparison?.geometry });
   $('fit-map').disabled = !state.map || !points.length;
-  state.map?.select(Boolean(state.roadbook) && !candidate && (state.choosing || points.length < 2));
-  const message = !state.roadbook ? '选择或新建路线后可在地图上选点' :
+  state.map?.select(Boolean(state.roadbook) && !candidate && !comparison && (state.choosing || points.length < 2));
+  const message = comparison ? (route ? '绿线为原路书 · 蓝紫线为导出轨迹' : '蓝紫线为导出轨迹') : !state.roadbook ? '选择或新建路线后可在地图上选点' :
     state.choosing ? (state.editIndex === null ? '在地图上选点，或搜索地点' : '请选择点位的新位置') :
     candidate ? '正在预览候选路线' :
     state.pending ? '正在更新骑行路线' :
@@ -346,7 +358,7 @@ function pickPoint(point, fromSearch = false) {
     }
     return;
   }
-  if (state.previousView || state.preview || (!fromSearch && !state.choosing && state.points.length >= 2)) return;
+  if (state.previousView || state.preview || currentExportReview()?.geometry || (!fromSearch && !state.choosing && state.points.length >= 2)) return;
   if (state.editIndex !== null) {
     state.points[state.editIndex] = point;
   } else {
@@ -464,6 +476,7 @@ function conversationBase(query) {
 }
 
 function showPreview(turn, index) {
+  if (state.roadbook) state.roadbook.exportReview = null;
   state.preview = index === null ? null : { turn, index };
   state.choosing = false;
   state.editIndex = null;
@@ -688,19 +701,99 @@ function dialog(title, label, confirm) {
   element.showModal();
   return content;
 }
-async function download(book, route, name) {
-  book.download = true; renderRoadbookDetails();
+function exportLink(label, url) {
+  const link = item('a', '', label);
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  return link;
+}
+
+function renderExportReview() {
+  const panel = $('export-review');
+  panel.replaceChildren();
+  const book = state.roadbook;
+  const review = currentExportReview(book);
+  panel.hidden = !review;
+  if (!review) return;
+  panel.append(item('h3', '', 'GPX 导出预览'));
+  if (review.pending) panel.append(item('p', '', '正在计算可导出的骑行轨迹…'));
+  if (review.error) panel.append(item('p', 'export-error', review.error));
+  if (review.geometry) {
+    const overview = (value, kind, label) => {
+      const distance = Number.isFinite(value?.distance) ? `${asKm(value.distance)} km` : '里程待核实';
+      const climb = value?.climb == null ? '爬升待核实' : `爬升 ${Math.round(value.climb)} m`;
+      const row = item('div', `export-line ${kind}`);
+      row.append(item('strong', '', label), item('span', '', `${distance} · ${climb}`));
+      return row;
+    };
+    const lines = item('div', 'export-legend');
+    if (review.saved.route) lines.append(overview(review.saved.route, 'original', '原路书'));
+    lines.append(overview(review, 'download-track', '导出轨迹'));
+    panel.append(lines, item('p', '', '请在地图上检查蓝紫色轨迹，GPX 将使用这条路线。'));
+    const credits = item('p', 'export-credit');
+    credits.append(exportLink('© OpenStreetMap contributors', 'https://www.openstreetmap.org/copyright'),
+      ' · ', exportLink('纠正地图', 'https://www.openstreetmap.org/fixthemap'));
+    panel.append(credits);
+  }
+  const controls = item('div', 'export-controls');
+  controls.append(action('关闭', 'button secondary', () => {
+    book.exportReview = null;
+    renderRoute();
+    if (state.roadbook === book) $('export').focus();
+  }));
+  if (!review.pending && review.error) {
+    controls.append(action('重新生成', 'button secondary', () => prepareDownload(book, review.saved)));
+  }
+  if (review.geometry) {
+    const button = action(book.download ? '正在下载…' : '下载 GPX', 'button dark', () => download(book, review.saved, review.token));
+    button.disabled = Boolean(book.download || review.expired);
+    controls.append(button);
+  }
+  panel.append(controls);
+}
+
+async function prepareDownload(book, saved) {
+  if (book !== state.roadbook || book.saved !== saved) return;
+  const review = { saved, pending: true };
+  book.exportReview = review;
+  $('search-results').hidden = true;
+  renderRoute();
   try {
-    const response = await request('/api/export', { ...routeFrom(route), name });
+    const track = await api('/api/export/preview', { ...routeFrom(saved), name: saved.name, confirmed: true });
+    Object.assign(review, track);
+  } catch (error) {
+    review.error = error.message;
+  } finally {
+    review.pending = false;
+    if (book === state.roadbook && currentExportReview(book) === review) {
+      renderRoute();
+      if (review.geometry) state.map?.fit();
+    }
+  }
+}
+
+async function download(book, saved, token = null) {
+  const review = currentExportReview(book);
+  if (book.saved !== saved || (token && review?.token !== token)) return;
+  book.download = true;
+  renderRoadbookDetails();
+  try {
+    const response = await request('/api/export', token ? { token } : { ...routeFrom(saved), name: saved.name });
     const url = URL.createObjectURL(await response.blob());
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = '演示样例-' + name.replace(/[\\/:*?"<>|]/g, '-') + '.gpx';
+    const name = token ? review.name : saved.name;
+    anchor.download = (token ? '' : '演示样例-') + name.replace(/[\\/:*?"<>|]/g, '-') + '.gpx';
     document.body.append(anchor); anchor.click(); anchor.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    toast('已生成演示 GPX 文件。');
-  } catch (error) { toast(error.message); }
-  finally {
+    toast(token ? '已下载 GPX。' : '已生成演示 GPX 文件。');
+  } catch (error) {
+    if (token && review) {
+      review.error = error.message;
+      review.expired = error.status === 410;
+    } else toast(error.message);
+  } finally {
     book.download = false;
     if (book === state.roadbook) renderRoadbookDetails();
   }
@@ -775,13 +868,18 @@ $('export').addEventListener('click', () => {
   const book = state.roadbook;
   const saved = book?.saved;
   if (!saved) return;
-  if (state.config.mode !== 'demo') {
-    toast('高德路线暂无法导出 GPX，待确认数据授权和坐标方案。');
+  if (state.config.mode === 'demo') {
+    const content = dialog('导出演示 GPX', '下载 GPX', () => download(book, saved));
+    content.append(item('p', '', saved.route ? saved.name + ' · ' + asKm(saved.route.distance) + ' km' : saved.name));
+    content.append(item('p', '', '用于验证文件导入。示例路网不用于实际导航。'));
     return;
   }
-  const content = dialog('导出演示 GPX', '下载 GPX', () => download(book, saved, saved.name));
-  content.append(item('p', '', saved.route ? saved.name + ' · ' + asKm(saved.route.distance) + ' km' : saved.name));
-  content.append(item('p', '', '用于验证文件导入。示例路网不用于实际导航。'));
+  const host = state.config.exportRouter;
+  if (!host) return toast('GPX 骑行算路服务地址配置无效。');
+  const content = dialog('生成 GPX 导出预览', '生成预览', () => prepareDownload(book, saved));
+  content.append(item('p', '', `将把已保存路书的起点、途经点和终点坐标发送给 ${host} 算路服务。`));
+  content.append(item('p', '', '导出轨迹按 OpenStreetMap 骑行路网重新计算，走向可能与原路书不同。请预览后下载。'));
+  if (host === 'routing.openstreetmap.de') content.append(exportLink('算路服务与隐私说明', 'https://routing.openstreetmap.de/about.html'));
 });
 $('agent-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -855,7 +953,14 @@ async function initialize() {
     $('demo-map').hidden = !demo;
     $('live-map').hidden = demo;
     $('footer-note').textContent = demo ? '示例路网与爬升用于体验编辑、规划和 GPX 流程。'
-      : '真实路线可用于预览。高德轨迹的 GPX 导出需完成授权和坐标验证。';
+      : 'GPX 导出使用开放骑行路网生成的预览轨迹。';
+    if (state.config.elevationSource === 'terrain-tiles') {
+      const credit = item('a', '', '高程数据 · Mapzen Terrain Tiles / USGS');
+      credit.href = 'https://github.com/tilezen/joerd/blob/master/docs/attribution.md';
+      credit.target = '_blank';
+      credit.rel = 'noopener noreferrer';
+      $('footer-note').append(' ', credit);
+    }
     loadRoadbooks();
     $('new-roadbook').disabled = false;
     if (demo) {

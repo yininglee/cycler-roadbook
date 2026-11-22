@@ -248,12 +248,16 @@ export async function liveMap(element, key, onPick) {
     fit() {
       if (overlays.length) map.setFitView(overlays, false, [65,70,65,70], 16);
     },
-    render({ geometry, points, preview }) {
+    render({ geometry, points, preview, alternateGeometry }) {
       if (overlays.length) map.remove(overlays);
       overlays = points.map(point => new sdk.Marker({ position: point.coords, title: point.name }));
       if (geometry.length > 1) overlays.push(new sdk.Polyline({
         path: geometry, strokeColor: preview ? color.preview : color.route,
         isOutline: true, outlineColor: '#fff', borderWeight: 2, strokeWeight: 6,
+      }));
+      if (alternateGeometry?.length > 1) overlays.push(new sdk.Polyline({
+        path: alternateGeometry, strokeColor: color.preview, strokeWeight: 5,
+        strokeStyle: 'dashed', strokeDasharray: [8, 5], zIndex: 65,
       }));
       if (overlays.length) map.add(overlays);
     },

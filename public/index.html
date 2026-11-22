@@ -40,6 +40,7 @@
               <button type="button" id="export" aria-label="导出 GPX"><span data-icon="download"></span>导出</button>
               <button type="button" id="delete-roadbook">删除</button>
             </div>
+            <section class="export-review" id="export-review" aria-label="GPX 导出预览" aria-live="polite" hidden></section>
           </div>
         </nav>
 
@@ -74,6 +75,7 @@
               <div><span class="card-label" id="draft-status">草稿</span><h2 id="route-title">我的骑行路书</h2></div>
               <button class="icon-button" id="rename" type="button" aria-label="重命名路线"><span data-icon="edit"></span></button>
             </div>
+            <p class="draft-climb" id="draft-climb" hidden aria-live="polite"></p>
             <div class="points-header"><h3>路线点位</h3><label class="loop-toggle"><input type="checkbox" id="loop"><span data-icon="repeat"></span>返回起点</label></div>
             <p class="route-note" id="route-note" hidden role="status"></p>
             <ol id="points" class="points"></ol>

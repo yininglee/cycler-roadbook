@@ -4,9 +4,10 @@
 
 ## 本地运行
 
-需要 Node.js 22 或以上版本，无需安装依赖。
+需要 Node.js 22 或以上版本。
 
 ```sh
+npm ci
 npm run dev
 npm run check
 ```
@@ -25,8 +26,15 @@ npm run check
 
 可参考 `.env.example` 在项目根目录配置 `.env.local`，也可以使用 `.env`。本地启动会读取两者，同名变量以 `.env.local` 中的值为准。只在服务端使用 Web 服务 Key、JS API 安全密钥和模型 Key。修改配置后重启开发服务。
 
-- **高德地图**设置 `AMAP_WEB_KEY`、`AMAP_JS_KEY` 和 `AMAP_JS_SECRET`。浏览器端加载 JS API，服务端请求地点搜索和骑行算路。正式轨迹的 GPX 导出等待来源授权和坐标方案验收。 [高德 JS API 安全密钥文档](https://lbs.amap.com/api/javascript-api-v2/guide/abc/jscode) · [骑行路线规划](https://lbs.amap.com/api/webservice/guide/api/newroute)
+- **高德地图**设置 `AMAP_WEB_KEY`、`AMAP_JS_KEY` 和 `AMAP_JS_SECRET`。浏览器端加载 JS API，服务端请求地点搜索和骑行算路。 [高德 JS API 安全密钥文档](https://lbs.amap.com/api/javascript-api-v2/guide/abc/jscode) · [骑行路线规划](https://lbs.amap.com/api/webservice/guide/api/newroute)
 - **LLM** 设置 `LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`。地址指向支持 JSON 对象输出的 Chat Completions 兼容服务，例如供应商的 `/v1` 地址。模型根据草稿、上一轮条件和工具结果调用 `search_places` 和 `plan_route`。选择开放终点时，路线工具沿多个方向查找落在目标距离附近的地点，并用骑行算路核验。首轮偏差较大时可再换一批区域搜索，沿用原有硬条件。未配置模型时，支持示例语句及常见调整。
-- **高程**可以配置 `ELEVATION_URL`。后端向该地址 POST JSON，输入为 `{"coordinateSystem":"GCJ-02","coordinates":[[经度,纬度],...]}`，返回 `{"elevations":[海拔米数,...]}`，与输入严格同序。供应方负责坐标适配。高程缺失或请求失败时标为「爬升暂无法核实」，带爬升硬上限的候选不可应用。
+- **高程**在 `.env.local` 设置 `ELEVATION_PROVIDER=terrain-tiles` 并重启，无需申请新 Key，也无需填写 `ELEVATION_URL`。后端按需读取公开的地形瓦片，在本地换算坐标、沿路线取样并估算累计爬升。瓦片服务只收到瓦片编号。地形估算在桥梁、隧道和高架附近可能偏离道路实际高度。 [Mapzen Terrain Tiles 数据说明](https://registry.opendata.aws/terrain-tiles/) · [数据来源与署名](https://github.com/tilezen/joerd/blob/master/docs/attribution.md)
+- **自建高程服务**如已部署，可填写 `ELEVATION_URL`，其优先级高于内置数据源。后端向该地址 POST JSON，输入为 `{"coordinateSystem":"GCJ-02","coordinates":[[经度,纬度],...]}`，返回 `{"elevations":[海拔米数,...]}`，与输入严格同序。高程缺失或请求失败时标为「爬升暂无法核实」，带爬升硬上限的候选不可应用。
+
+### 真实路线导出 GPX
+
+在「我的路书」选中已保存的路线，点击「导出」和「生成预览」。服务仅使用确认的起点、途经点和终点坐标，在 OpenStreetMap 骑行路网上重新算路。地图以绿色显示原路书，以蓝紫虚线显示导出轨迹，并展示各自的里程与预估爬升。确认后下载预览所对应的 WGS84 GPX 1.1，文件包含路网署名。导出不修改已保存的路线。
+
+本地个人使用默认接入 FOSSGIS 公共骑行算路服务，无需新 Key。服务会收到用于算路的点位坐标。若点位附近没有可接入的骑行路网，请调整该点后重试。如需使用自己的 OSRM 骑行实例，在 `.env.local` 写入 `GPX_OSRM_BIKE_URL`，其值为提供 `/route/v1/driving/` 的自行车配置实例根地址。 [FOSSGIS 使用及隐私说明](https://routing.openstreetmap.de/about.html) · [OpenStreetMap 路网署名](https://www.openstreetmap.org/copyright) · [GPX 1.1 规范](https://www.topografix.com/GPX/1/1/)
 
 [产品需求与发布验收](骑行路书制作Agent-workspace/prd/PRD.md)
