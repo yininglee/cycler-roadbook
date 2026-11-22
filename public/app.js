@@ -27,7 +27,18 @@ const state = {
   revision: 0, searchRequest: 0, planning: false,
   turns: [], preview: null, context: null, appliedContext: null,
   roadbooks: [], roadbook: null, panel: 'ai', dirty: false,
+  location: null, locating: false,
 };
+const ridePrompts = [
+  ['轻松骑 20 公里', '骑 20 公里左右，尽量少爬升，终点不限。'],
+  ['30 公里环线', '骑一条 30 公里左右的环线，最后回到起点。'],
+  ['40 公里单程', '骑 40 公里左右的单程，终点不限。'],
+];
+const editPrompts = [
+  ['加个补给点', '途中加一个补给点。'],
+  ['找个用餐点', '途中加一家餐厅。'],
+  ['找个住宿点', '途中加一个住宿的地方。'],
+];
 const item = (tag, className, label) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -434,18 +445,21 @@ function placeButton(place, handler) {
   if (place.address) button.append(item('small', '', place.address));
   return button;
 }
-function conversationBase() {
+function conversationBase(query) {
   const latest = state.turns.at(-1);
   const saved = state.roadbook?.saved;
   const route = saved ?? state;
   const measuredRoute = saved ? saved.route : selectedRoute();
   const pendingTurn = latest?.revision === state.revision && !latest.result?.candidates?.length && latest.result?.context
     ? latest : null;
+  const context = pendingTurn?.result.context ?? (saved ? saved.appliedContext : state.context);
+  const usesLocation = /当前位置|当前定位|所在位置/.test(query) || /当前位置|当前定位|所在位置/.test(context?.intent?.start ?? '');
   return {
     points: route.points, loop: route.loop,
     distance: measuredRoute?.distance, supplyPoints: measuredRoute?.supplyPoints ?? saved?.supplyPoints,
-    saved: Boolean(saved), context: pendingTurn?.result.context ?? (saved ? saved.appliedContext : state.context),
+    saved: Boolean(saved), context,
     selections: pendingTurn?.base.selections ?? {},
+    location: usesLocation && state.config.mode === 'amap' ? state.location ?? undefined : undefined,
   };
 }
 
@@ -524,13 +538,50 @@ function renderCandidate(turn, candidate, index) {
   return card;
 }
 
+function ridePrompt(request) {
+  const start = state.points[0]?.name || (state.config.mode === 'amap' && state.location ? '当前位置' : '');
+  return start ? `从${start}出发，${request}` : `想${request}`;
+}
+
+function renderPrompts() {
+  const latest = state.turns.at(-1);
+  const origin = $('prompt-origin');
+  const shortcuts = $('agent-shortcuts');
+  const editing = Boolean(state.roadbook?.saved || state.points.length > 1);
+  const waiting = latest?.revision === state.revision &&
+    (latest.result?.context?.waitingFor || latest.result?.ambiguous?.length || latest.failed);
+  shortcuts.hidden = !state.roadbook || (editing ? Boolean(waiting) : Boolean(latest));
+  if (shortcuts.hidden) return;
+
+  const start = state.points[0];
+  const live = state.config.mode === 'amap';
+  origin.hidden = editing;
+  $('prompt-origin-label').textContent = start ? `起点 · ${start.name}` : live && state.location ? '起点 · 当前位置' : '可先设置起点';
+  $('prompt-locate').hidden = Boolean(start) || !live || Boolean(state.location);
+  $('prompt-locate').disabled = state.locating || !state.map;
+  $('prompt-locate-label').textContent = state.locating ? '正在定位…' : '使用当前位置';
+  const input = $('agent-input');
+  const buttons = (editing ? editPrompts : ridePrompts).map(([label, message]) => {
+    const button = action(label, '', () => {
+      const value = editing ? message : ridePrompt(message);
+      state.roadbook.rideShortcut = editing ? null : { request: message, value };
+      input.value = value;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(value.length, value.length);
+    });
+    button.disabled = state.planning || state.pending || state.previousView;
+    return button;
+  });
+  $('prompts').replaceChildren(...buttons);
+}
+
 function renderPlan(follow = false) {
   const log = $('agent-results');
   const latest = state.turns.at(-1);
   const scrollTop = log.scrollTop;
   log.replaceChildren();
   $('plan-button').disabled = !state.roadbook || state.planning || state.pending || state.previousView;
-  $('prompts').hidden = Boolean(latest);
+  renderPrompts();
   log.hidden = !latest;
   const target = $('agent-target');
   target.replaceChildren();
@@ -588,7 +639,7 @@ function renderPlan(follow = false) {
 async function runPlan(query, continuation = null) {
   const book = state.roadbook;
   if (!book || state.pending || state.previousView || state.planning) return;
-  const base = continuation?.base ?? conversationBase();
+  const base = continuation?.base ?? conversationBase(query);
   const history = state.turns.slice(-6).map(turn => ({
     prompt: turn.prompt, reply: turn.result?.question,
     candidates: turn.result?.candidates?.map(route => destinationOf(route)),
@@ -737,6 +788,7 @@ $('agent-form').addEventListener('submit', event => {
   const value = $('agent-input').value.trim();
   if (!value) return $('agent-input').focus();
   if ($('plan-button').disabled) return;
+  state.roadbook.rideShortcut = null;
   $('agent-input').value = '';
   runPlan(value);
 });
@@ -745,23 +797,21 @@ $('agent-input').addEventListener('keydown', event => {
   event.preventDefault();
   $('agent-form').requestSubmit();
 });
-$('prompts').querySelectorAll('[data-prompt]').forEach(button => button.addEventListener('click', () => {
-  $('agent-input').value = button.dataset.prompt;
-  $('agent-input').focus();
-}));
 $('zoom-in').addEventListener('click', () => state.map?.zoom(1));
 $('zoom-out').addEventListener('click', () => state.map?.zoom(-1));
 $('fit-map').addEventListener('click', () => state.map?.fit());
 $('nationwide-map').addEventListener('click', () => state.map?.showNationwide());
 
 async function locate() {
-  if (!state.map) return;
+  if (!state.map || state.locating) return;
   if (!window.isSecureContext) return toast('请通过 HTTPS 或本机地址打开页面后定位。');
   if (!navigator.geolocation) return toast('当前浏览器不支持定位。');
 
   const button = $('locate-map');
+  state.locating = true;
   button.disabled = true;
   button.setAttribute('aria-busy', 'true');
+  renderPrompts();
   toast('正在获取当前位置…');
   try {
     const position = await new Promise((resolve, reject) => {
@@ -771,7 +821,13 @@ async function locate() {
     });
     const gps = [position.coords.longitude, position.coords.latitude];
     const { coords } = state.config.mode === 'amap' ? await api('/api/location', { coords: gps }) : { coords: gps };
+    state.location = coords;
     state.map.showLocation(coords);
+    const shortcut = state.roadbook?.rideShortcut;
+    if (shortcut && $('agent-input').value === shortcut.value) {
+      shortcut.value = ridePrompt(shortcut.request);
+      $('agent-input').value = shortcut.value;
+    }
     toast('已定位到当前位置。');
   } catch (error) {
     const message = {
@@ -781,11 +837,14 @@ async function locate() {
     }[error.code];
     toast(message || error.message || '定位失败，请重试。');
   } finally {
+    state.locating = false;
     button.disabled = false;
     button.removeAttribute('aria-busy');
+    renderPrompts();
   }
 }
 $('locate-map').addEventListener('click', locate);
+$('prompt-locate').addEventListener('click', locate);
 
 async function initialize() {
   try {
@@ -807,6 +866,7 @@ async function initialize() {
       $('search-input').placeholder = '搜索全国地名或地点';
     }
     for (const id of ['zoom-in', 'zoom-out', 'locate-map']) $(id).disabled = false;
+    renderPrompts();
     renderRoute(); state.map.fit();
   } catch (error) {
     $('environment').lastChild.textContent = '地图未连接';

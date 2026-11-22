@@ -82,10 +82,16 @@
           </section>
 
           <section class="editor-panel ai-card" id="ai-panel" role="tabpanel" aria-labelledby="ai-tab">
-            <div class="prompts" id="prompts"><button type="button" data-prompt="从西湖文化广场出发，骑 40 公里左右，尽量少爬升，终点不限。">40 km · 终点不限</button><button type="button" data-prompt="从西湖文化广场出发，骑到湘湖，累计爬升不超过 300 米。">爬升 300 m 内</button><button type="button" data-prompt="从西湖文化广场出发，途经六和塔，骑到湘湖，中途需要补给。">中途找个补给点</button></div>
             <div id="agent-results" class="agent-results" role="log" aria-label="路线对话" aria-live="off" tabindex="0" hidden></div>
             <span id="agent-announcement" class="sr-only" role="status"></span>
             <div id="agent-target" class="agent-target" hidden></div>
+            <div class="agent-shortcuts" id="agent-shortcuts" hidden>
+              <div class="prompt-origin" id="prompt-origin" hidden>
+                <span id="prompt-origin-label" aria-live="polite"></span>
+                <button type="button" class="inline-action" id="prompt-locate"><span data-icon="locate"></span><span id="prompt-locate-label">使用当前位置</span></button>
+              </div>
+              <div class="prompts" id="prompts" role="group" aria-label="快捷提问"></div>
+            </div>
             <form id="agent-form" class="agent-form"><label class="sr-only" for="agent-input">路线消息</label><textarea id="agent-input" rows="2" maxlength="600" placeholder="说说想从哪出发、骑多远"></textarea><button type="submit" aria-label="发送消息" id="plan-button"><span data-icon="send"></span></button></form>
           </section>
         </section>

@@ -22,6 +22,44 @@ test('an open endpoint yields a one-way route and a follow-up preserves the star
   assert.equal(followUp.candidates[0].points[0].id, first.candidates[0].points[0].id);
 });
 
+test('current-location prompts route from the supplied coordinates without looking up a place name', async () => {
+  const location = [121.4737, 31.2304];
+  const destination = { id: 'end', name: '终点公园', coords: positionAtDistance(location, 90, 15000) };
+  const provider = {
+    kind: 'test',
+    find: async name => assert.fail(`Unexpected place lookup: ${name}`),
+    nearby: async () => [destination],
+    leg: async (from, to) => ({ geometry: [from.coords, to.coords], distance: 20000 }),
+    elevations: async () => null,
+  };
+  const prompt = '从当前位置出发，骑 20 公里左右，尽量少爬升，终点不限。';
+  const result = await runAgent(provider, { prompt, location }, async messages => {
+    if (messages.length > 2) return { action: 'finish' };
+    const input = JSON.parse(messages[1].content);
+    assert.equal(input.locationAvailable, true);
+    assert.equal(input.location, undefined);
+    return { action: 'plan_route', mode: 'new', intent: { destination: 'open', targetKm: 20, lowClimb: true } };
+  });
+  assert.deepEqual(result.candidates[0].points[0].coords, location);
+  assert.equal(result.candidates[0].points[0].name, '定位起点');
+  const missing = await runAgent(provider, { prompt, location: [999, 0] }, null);
+  assert.equal(missing.context.waitingFor, 'start');
+  assert.match(missing.question, /请先在地图上定位/);
+
+  const loop = await runAgent({ ...provider,
+    nearby: async coords => [{ id: coords.join(','), name: '环线途经点', coords }],
+    leg: async (from, to) => ({ geometry: [from.coords, to.coords], distance: distanceMeters(from.coords, to.coords) * 1.3 }),
+  }, { prompt: '从当前位置出发，骑一条 30 公里左右的环线，最后回到起点。', location }, null);
+  assert.ok(loop.candidates.some(route => route.canApply && route.loop && Math.abs(route.distance - 30000) < 100));
+  assert.deepEqual(loop.candidates[0].geometry.at(-1), location);
+
+  const selected = { id: 'start', name: '已选地名', coords: [121.49, 31.22] };
+  const named = await runAgent(provider, {
+    prompt: `从${selected.name}出发，骑 20 公里左右，终点不限。`, points: [selected], location,
+  }, null);
+  assert.deepEqual(named.candidates[0].points[0], selected);
+});
+
 test('the route tool returns measured feedback and tries wider search without changing constraints', async () => {
   const home = { id: 'home', name: '起点公园', coords: [120, 30] };
   const short = { id: 'short', name: '近处公园', coords: positionAtDistance(home.coords, 0, 16000) };

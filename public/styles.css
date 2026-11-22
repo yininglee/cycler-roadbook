@@ -131,9 +131,14 @@ h2{font-size:21px;font-weight:810;letter-spacing:-.036em;line-height:1.25;overfl
 .add-point:hover:not(:disabled){border-color:#a4b4a1}
 .add-point.active{background:#edf5e7;border-color:#b6c9b3;color:#36543e}
 .route-note{background:#fff2e2;color:#724a26;padding:7px 9px;border-radius:10px;font-size:13px;margin-top:10px}
-.prompts{display:flex;flex-wrap:wrap;gap:6px;padding:5px 1px 6px}
-.prompts button{border:1px solid var(--line);background:white;min-height:29px;border-radius:999px;padding:0 9px;font-size:12px;font-weight:650}
-.prompts button:hover{background:#f5f4f8;border-color:#d7cfe4}
+.agent-shortcuts{flex:none;padding-top:5px}
+.prompt-origin{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:2px 8px;margin-bottom:4px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.prompt-origin button{display:inline-flex;align-items:center;gap:4px;min-height:32px;color:var(--sport)}
+.prompt-origin svg{width:15px;height:15px}
+.prompts{display:flex;flex-wrap:wrap;gap:6px}
+.prompts button{border:1px solid var(--line);background:var(--surface);min-height:32px;border-radius:999px;padding:0 10px;font-size:12px;font-weight:650}
+.prompts button:hover:not(:disabled){background:var(--sport-soft);border-color:#b6c9b3;color:var(--sport)}
+@media (pointer:coarse){.prompts button,.prompt-origin button{min-height:44px}}
 .agent-form{display:flex;flex:none;align-items:end;gap:7px;padding:7px;background:#f7f7f8;border:1px solid var(--line);border-radius:16px;margin-top:9px}
 .agent-form:focus-within{border-color:var(--ink)}
 .agent-form textarea{resize:vertical;width:100%;min-height:47px;max-height:180px;border:0;background:transparent;padding:4px 5px;font-size:14px;outline:none}
