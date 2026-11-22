@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runAgent } from '../lib/agent.mjs';
 import { distanceMeters, positionAtDistance } from '../lib/geo.mjs';
-import { buildRoute } from '../lib/planner.mjs';
+import { buildRoute, revisePoint } from '../lib/planner.mjs';
 import { getProvider } from '../lib/providers.mjs';
 
 const openRequest = '从西湖文化广场出发，骑 40 公里左右，尽量少爬升。不限终点';
@@ -263,6 +263,18 @@ test('the agent composes a local loop, meal and bridge return, retrying only cha
   assert.equal(result.context.intent.maxDistanceKm, 65);
   assert.ok(route.rules.some(rule => rule.label === '绕行广州大学城' && rule.status === 'pass'));
 
+  const section = route.sections.find(section => section.area);
+  const edited = await revisePoint(provider, route, section.start + 1, center, result.context.intent);
+  const failedArea = edited.rules.find(rule => rule.label === '绕行广州大学城');
+  assert.equal(edited.canApply, false);
+  assert.equal(failedArea.status, 'fail');
+  assert.match(failedArea.detail, /区域中心最近相距 0.0 m/);
+  assert.deepEqual(failedArea.mapSpan, [edited.legEnds[section.start - 1], edited.legEnds[section.end - 1]]);
+  const deleted = await revisePoint(provider, route, route.points.length - 2, null, result.context.intent);
+  assert.ok(deleted.canApply);
+  assert.equal(deleted.points.length, route.points.length - 1);
+  assert.equal(deleted.sections.at(-1).end, route.sections.at(-1).end - 1);
+
   const unavailable = await runAgent({ ...provider, nearby: async () => [] }, followUp, async messages => messages.length === 2
     ? { action: 'find_loop_waypoints', query: '大学城', at: 'S2' }
     : { action: 'clarify', question: toolOutput(messages).question });
@@ -303,6 +315,39 @@ test('a saved route remains the reference even when a different candidate is pre
   assert.equal(next.context.mode, 'revise');
   assert.equal(next.context.intent.targetKm, 40);
   assert.equal(next.candidates[0].points.at(-1).id, savedRoute.points.at(-1).id);
+});
+
+test('an explicit preview target edits the selected occurrence and keeps unaffected legs', async () => {
+  const [start] = await demo.find('西湖文化广场');
+  const [repeat] = await demo.find('杨公堤');
+  const [middle] = await demo.find('龙井村');
+  const [end] = await demo.find('湘湖');
+  const points = [start, repeat, middle, repeat, end];
+  const track = await buildRoute(demo, points, false);
+  const calls = [];
+  const provider = { ...demo, leg: async (from, to) => {
+    calls.push([from.id, to.id]);
+    return demo.leg(from, to);
+  } };
+  const body = { saved: true, target: 'preview', points, prompt: '把这个点换成六和塔',
+    selectedPoint: { id: repeat.id, index: 3 }, context: { intent: { maxDistanceKm: 80 } } };
+  const edited = await runAgent(provider, body, async messages => {
+    const input = JSON.parse(messages[1].content);
+    assert.equal(input.preview, true);
+    assert.equal(input.selectedPoint.ref, 'S3');
+    return { action: 'edit_point', at: 'S3', query: '六和塔' };
+  }, track);
+  assert.deepEqual(edited.candidates[0].points.map(point => point.id), ['hub', 'lake', 'tea', 'tower', 'xiang']);
+  assert.deepEqual(calls, [['tea', 'tower'], ['tower', 'xiang']]);
+  assert.equal(edited.context.intent.maxDistanceKm, 80);
+
+  for (const [index, name, id] of [[0, '拱宸桥', 'canal'], [4, '白马湖公园', 'park']]) {
+    const result = await runAgent(demo, { ...body, prompt: `把这个点换到${name}`,
+      selectedPoint: { index, id: points[index].id } }, null, track);
+    assert.equal(result.candidates[0].points[index].id, id);
+    assert.deepEqual(result.candidates[0].points.filter((_, i) => i !== index), track.points.filter((_, i) => i !== index));
+  }
+  await assert.rejects(runAgent(demo, { ...body, selectedPoint: { index: 3, id: 'other' } }, null), /重新选点/);
 });
 
 test('along-route stops use requested categories and preserve the saved point order', async () => {

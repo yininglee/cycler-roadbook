@@ -16,6 +16,8 @@ const icons = {
   up: '<path d="m6 14 6-6 6 6"/>',
   down: '<path d="m6 10 6 6 6-6"/>',
   send: '<path d="M12 20V4m-6 6 6-6 6 6"/>',
+  undo: '<path d="M9 14l-5-5 5-5M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  redo: '<path d="m15 14 5-5-5-5m5 5H10a6 6 0 0 0 0 12h3"/>',
 };
 const glyph = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 const $ = id => document.getElementById(id);
@@ -23,9 +25,9 @@ document.querySelectorAll('[data-icon]').forEach(node => { node.innerHTML = glyp
 
 const state = {
   config: null, map: null, points: [], loop: false, name: '',
-  active: null, pending: false, routeError: '', previousView: false, editIndex: null, choosing: false,
+  active: null, pending: false, routeError: '', routeIssues: [], previousView: false, editIndex: null, choosing: false,
   revision: 0, searchRequest: 0, planning: false,
-  turns: [], preview: null, context: null, appliedContext: null,
+  turns: [], preview: null, selection: null, context: null, appliedContext: null,
   roadbooks: [], roadbook: null, panel: 'ai', dirty: false,
   location: null, locating: false,
 };
@@ -67,14 +69,86 @@ async function request(path, input) {
   });
   if (!response.ok) {
     const failure = await response.json().catch(() => ({}));
-    throw Object.assign(new Error(failure.error || '服务暂不可用，请重试。'), { status: response.status });
+    throw Object.assign(new Error(failure.error || '服务暂不可用，请重试。'), { status: response.status, issues: failure.issues });
   }
   return response;
 }
 const api = async (...args) => (await request(...args)).json();
 const asKm = distance => (distance / 1000).toFixed(1);
 const routeFrom = route => ({ points: route.points, loop: route.loop, distance: route.distance, supplyPoints: route.supplyPoints });
-const previewRoute = () => state.preview?.turn.result.candidates[state.preview.index];
+const originalPreview = () => state.preview?.turn.result.candidates[state.preview.index];
+const previewHistory = () => state.roadbook?.previewEdits?.get(originalPreview());
+const previewRoute = () => previewHistory()?.current.route ?? originalPreview();
+const conversationTarget = () => previewRoute() ?? state.roadbook?.saved ?? state.points;
+const editorPoints = () => previewRoute()?.points ?? (state.panel === 'ai' ? state.roadbook?.saved?.points : null) ?? state.points;
+const selectedIndexFor = points => state.selection?.points === points ? state.selection.index : null;
+const canContinueTurn = turn => turn.targetRoute === conversationTarget() &&
+  (turn.base?.selectedPoint?.index ?? null) === selectedIndexFor(editorPoints());
+const pointRole = (index, points, loop) => index === 0 ? (loop ? '起终点' : '起点') : !loop && index === points.length - 1 ? '终点' : `途经点 ${index}`;
+const pointInteractions = () => Boolean(state.roadbook && !state.previousView && !state.pending && !state.planning && !currentExportReview()?.geometry);
+const verificationIssues = route => (route?.rules ?? []).filter(rule => rule.hard && (rule.status === 'fail' || rule.status === 'unknown'));
+const verificationStatus = rule => rule.status === 'fail' ? '未通过' : '待核实';
+const verificationReason = rule => `${rule.label} · ${verificationStatus(rule)}（${rule.detail}）`;
+const candidateSaveLabel = (candidate, saved, fallback) => verificationIssues(candidate).length ? '核实后保存' :
+  saved ? '替换已保存路线' : fallback;
+const canReviewCandidate = candidate => candidate.geometry?.length > 1 &&
+  (candidate.canApply || verificationIssues(candidate).length > 0);
+const currentDiagnostic = () => {
+  const manual = previewHistory()?.current;
+  if (manual?.issues.length) return { target: manual.route, issues: manual.issues };
+  const diagnostic = state.roadbook?.diagnostic;
+  return diagnostic?.target === conversationTarget() ? diagnostic : null;
+};
+
+function recordEdit(history, previous) {
+  if (history.undo.length === 30) history.undo.shift();
+  history.undo.push(previous);
+  history.redo.length = 0;
+}
+
+function draftSnapshot() {
+  const { points, loop, active, routeError, routeIssues, dirty, appliedContext, context } = state;
+  return { points: [...points], loop, active, routeError, routeIssues, dirty, appliedContext, context };
+}
+
+function editDraft(change) {
+  if (!pointInteractions()) return;
+  const history = state.roadbook.draftHistory ??= { undo: [], redo: [] };
+  recordEdit(history, draftSnapshot());
+  change();
+  updateRoute();
+}
+
+function activeHistory() {
+  return state.preview ? previewHistory() : state.panel === 'manual' ? state.roadbook?.draftHistory : null;
+}
+
+function stepHistory(direction) {
+  const history = activeHistory();
+  if (!pointInteractions() || !history?.[direction].length) return;
+  const next = history[direction].pop();
+  const other = direction === 'undo' ? 'redo' : 'undo';
+  if (state.preview) {
+    history[other].push(history.current);
+    history.current = next;
+    const { points } = next.route;
+    state.selection = Number.isInteger(next.index) && points[next.index] ? { points, index: next.index } : null;
+  } else {
+    history[other].push(draftSnapshot());
+    Object.assign(state, next);
+    state.dirty ||= Boolean(state.roadbook.saved && state.name !== state.roadbook.saved.name);
+    state.revision++;
+    state.selection = null;
+    renderRoadbooks();
+  }
+  state.roadbook.diagnostic = null;
+  state.choosing = false;
+  state.editIndex = null;
+  state.searchRequest++;
+  $('search-results').hidden = true;
+  renderPlan(); renderRoute();
+  state.map?.fit();
+}
 function currentExportReview(book = state.roadbook) {
   const review = book?.exportReview;
   return review && review.saved === book.saved ? review : null;
@@ -148,7 +222,7 @@ function cacheEditor() {
   if (!state.roadbook) return;
   Object.assign(state.roadbook, {
     name: state.name, points: [...state.points], loop: state.loop, dirty: state.dirty,
-    active: state.active, pending: state.pending, routeError: state.routeError, revision: state.revision,
+    active: state.active, pending: state.pending, routeError: state.routeError, routeIssues: state.routeIssues, revision: state.revision,
     turns: state.turns, context: state.context, appliedContext: state.appliedContext, input: $('agent-input').value,
     panel: state.panel, planning: state.planning, preview: state.preview, previousView: state.previousView,
   });
@@ -159,8 +233,8 @@ function persistRoadbooks() {
     const books = state.roadbooks.map(book => {
       const { id, saved } = book;
       if (!saved) return { id, name: book.name, points: [], loop: false, autoName: book.autoName };
-      const { name, points, loop, appliedContext, supplyPoints } = saved;
-      return { id, name, points, loop, appliedContext, supplyPoints, trackId: saved.route?.trackId ?? saved.trackId };
+      const { name, points, loop, appliedContext, supplyPoints, verification } = saved;
+      return { id, name, points, loop, appliedContext, supplyPoints, verification, trackId: saved.route?.trackId ?? saved.trackId };
     });
     localStorage.setItem(roadbookKey(), JSON.stringify({ books, selected: state.roadbook?.id ?? null }));
     return true;
@@ -169,18 +243,20 @@ function persistRoadbooks() {
   }
 }
 
-function commitRoadbook() {
+function commitRoadbook(verification) {
   const book = state.roadbook;
   if (!book || !state.active || state.pending || state.routeError || state.previousView) return;
+  if (book.saved?.route === state.active) verification ??= book.saved.verification;
   if (book.autoName && !book.saved) {
     const start = state.points[0].name;
     const end = state.loop ? '环线' : '到' + state.points.at(-1).name;
     state.name = uniqueRoadbookName(start + end, book);
   }
   state.dirty = false;
+  book.draftHistory = null;
   cacheEditor();
   const { name, points, loop, active, appliedContext } = book;
-  book.saved = { name, points, loop, route: active, appliedContext, supplyPoints: active.supplyPoints };
+  book.saved = { name, points, loop, route: active, appliedContext, supplyPoints: active.supplyPoints, verification };
   book.exportReview = null;
   renderRoadbooks();
   toast(persistRoadbooks() ? '路书已保存。' : '已保存到当前页面。浏览器存储不可用。');
@@ -203,9 +279,10 @@ function openRoadbook(book) {
   Object.assign(state, {
     roadbook: book, dirty: book?.dirty ?? false,
     name: book?.name ?? '', points: [...(book?.points ?? [])], loop: book?.loop === true,
-    revision: book?.revision ?? 0, active: book?.active ?? null, routeError: book?.routeError ?? '', pending: book?.pending ?? needsRoute,
+    revision: book?.revision ?? 0, active: book?.active ?? null, routeError: book?.routeError ?? '', routeIssues: book?.routeIssues ?? [],
+    pending: book?.pending ?? needsRoute,
     turns: book?.turns ?? [], context: book?.context ?? book?.appliedContext ?? null, appliedContext: book?.appliedContext ?? null,
-    editIndex: null, choosing: false, previousView: book?.previousView ?? false,
+    editIndex: null, choosing: false, selection: null, previousView: book?.previousView ?? false,
     planning: book?.planning ?? false, preview: book?.preview ?? null, panel: book?.panel ?? 'ai',
   });
   $('search-results').hidden = true;
@@ -230,9 +307,13 @@ function renderEditorTabs() {
 
 function showEditor(panel) {
   state.panel = panel;
+  state.choosing = false;
+  state.editIndex = null;
+  state.searchRequest++;
+  $('search-results').hidden = true;
   renderEditorTabs();
-  if (panel === 'manual' && state.preview) showPreview(null, null);
-  else if (panel === 'ai') renderPlan(true);
+  renderPlan(panel === 'ai');
+  renderRoute();
 }
 
 function renderRoadbookDetails() {
@@ -254,8 +335,13 @@ function renderRoadbookDetails() {
   $('roadbook-end').textContent = saved?.loop ? '返回起点' : points.at(-1)?.name ?? '';
   const status = $('roadbook-status');
   status.textContent = saved && state.dirty ? '有未保存的修改' : state.pending ? '正在加载路线…' :
-    state.routeError ? '路线待调整' : current?.climb === null ? '爬升待核实' : '';
+    state.routeError ? '路线待调整' : current?.climb === null ? '缺少高程数据，爬升待核实' : '';
   status.hidden = !status.textContent;
+  const verification = $('roadbook-verification');
+  const review = saved?.verification ?? [];
+  verification.hidden = !review.length;
+  if (verification.hidden) verification.open = false;
+  $('roadbook-verification-issues').replaceChildren(...review.map(rule => item('li', rule.status, verificationReason(rule))));
   $('export').hidden = !saved;
   $('export').disabled = Boolean(book?.download || currentExportReview(book));
   renderExportReview();
@@ -263,23 +349,42 @@ function renderRoadbookDetails() {
 
 function renderRoute() {
   const current = selectedRoute();
+  const saved = state.panel === 'ai' ? state.roadbook?.saved : null;
   const exportReview = currentExportReview();
   const comparison = exportReview?.geometry ? exportReview : null;
   const candidate = comparison ? null : previewRoute();
-  const route = comparison ? comparison.saved.route : candidate ?? current;
+  const route = comparison ? comparison.saved.route : candidate ?? (saved ? saved.route : current);
+  const diagnostic = comparison || state.previousView ? null : currentDiagnostic();
+  const issues = comparison || state.previousView ? [] : mapIssuesFor(route, diagnostic?.issues ?? (candidate || saved && state.dirty ? [] : state.routeIssues));
+  const mapIssues = $('map-issues');
+  mapIssues.replaceChildren(...issues.map(issue => {
+    const row = item('li', `map-issue ${issue.type}`);
+    row.append(item('span', 'map-issue-key'), item('span', '', issue.message));
+    if (issue.detail) row.title = issue.detail;
+    return row;
+  }));
+  mapIssues.hidden = !issues.length;
+  $('clear-map-issues').hidden = !diagnostic;
   $('route-title').textContent = state.name;
   const draftClimb = $('draft-climb');
   draftClimb.hidden = route?.climb == null;
   draftClimb.textContent = draftClimb.hidden ? '' : `预估累计爬升 ${Math.round(route.climb)} m`;
-  $('draft-status').textContent = !state.roadbook?.saved ? '路线草稿' : state.dirty ? '有未保存的修改' : '已保存';
-  $('search-form').querySelectorAll('input, button').forEach(control => { control.disabled = Boolean(candidate || comparison); });
+  $('draft-status').textContent = candidate ? '编辑候选路线' : !state.roadbook?.saved ? '路线草稿' : state.dirty ? '有未保存的修改' : '已保存';
+  $('manual-end-preview').hidden = !candidate;
+  $('manual-end-preview').disabled = state.pending || state.planning;
+  $('rename').disabled = Boolean(candidate);
+  $('search-form').querySelectorAll('input, button').forEach(control => {
+    control.disabled = Boolean(comparison || candidate && (!state.choosing || !pointInteractions()));
+  });
   $('loop').checked = candidate?.loop ?? (state.previousView ? state.active.loop : state.loop);
   const readOnly = state.previousView || Boolean(candidate || comparison);
   $('loop').disabled = !state.config || readOnly;
   $('add-point').hidden = Boolean(candidate);
   $('add-point').disabled = !state.config || state.points.length >= 12 || readOnly;
   $('add-point').classList.toggle('active', state.choosing && state.editIndex === null);
-  $('save-roadbook').disabled = !current || readOnly || !state.dirty || state.planning;
+  $('save-roadbook').textContent = candidate ? candidateSaveLabel(candidate, state.roadbook?.saved, '保存路书') : '保存路书';
+  $('save-roadbook').disabled = candidate ? !canReviewCandidate(candidate) || candidate === state.roadbook?.saved?.route || !pointInteractions() || Boolean(diagnostic) :
+    !current || readOnly || !state.dirty || state.planning;
   renderRoadbookDetails();
   const note = $('route-note');
   note.replaceChildren();
@@ -291,47 +396,77 @@ function renderRoute() {
       note.append(action('重试', 'inline-action', updateRoute));
       if (state.active) note.append(action('查看上一版', 'inline-action', () => { state.previousView = true; renderPlan(); renderRoute(); state.map?.fit(); }));
     }
-  } else if (route && route.climb === null) note.textContent = '爬升暂无法核实。';
+  } else if (candidate && diagnostic) note.replaceChildren(...diagnostic.issues.map(issue => item('div', '', issue.message)));
+  else if (candidate && verificationIssues(candidate).length) {
+    note.replaceChildren(...verificationIssues(candidate).map(rule => item('div', rule.status, verificationReason(rule))));
+  } else if (route?.climb === null) note.textContent = '缺少高程数据，爬升暂无法核实。';
   note.hidden = !note.hasChildNodes();
 
   const pointList = $('points');
-  const points = comparison?.saved.points ?? candidate?.points ?? (state.previousView ? state.active.points : state.points);
-  const loop = comparison?.saved.loop ?? candidate?.loop ?? (state.previousView ? state.active.loop : state.loop);
+  const points = comparison?.saved.points ?? (state.previousView ? state.active.points : editorPoints());
+  const loop = comparison?.saved.loop ?? candidate?.loop ?? saved?.loop ?? (state.previousView ? state.active.loop : state.loop);
+  const selectPoints = pointInteractions();
+  const history = activeHistory();
+  $('map-history').hidden = !state.roadbook || !(candidate || state.panel === 'manual') || Boolean(comparison);
+  for (const direction of ['undo', 'redo']) {
+    for (const scope of ['map', 'manual']) $(scope + '-' + direction).disabled = !selectPoints || !history?.[direction].length;
+  }
+  const selectedIndex = selectedIndexFor(points);
   pointList.replaceChildren();
   if (!points.length) pointList.append(item('li', 'point-empty', '先在地图上选择起点。'));
   points.forEach((point, index) => {
     const end = !loop && index > 0 && index === points.length - 1;
-    const row = item('li', end ? 'point end' : 'point');
-    row.append(item('span', 'point-marker', index === 0 ? '起' : end ? '终' : index));
-    const label = readOnly ? item('span', 'point-name', pointLabel(point)) :
+    const row = item('li', `point${end ? ' end' : ''}${selectedIndex === index ? ' selected' : ''}`);
+    row.append(item('span', 'point-marker', index === 0 ? (loop ? '环' : '起') : end ? '终' : index));
+    const label = !selectPoints && readOnly ? item('span', 'point-name', pointLabel(point)) :
       action(pointLabel(point), 'point-name', () => choosePoint(index));
+    if (label.tagName === 'BUTTON') {
+      label.disabled = !selectPoints;
+      label.setAttribute('aria-pressed', selectedIndex === index);
+    }
     label.title = pointLabel(point);
     row.append(label);
-    if (!readOnly) {
+    if (candidate) {
+      const actions = item('div', 'point-actions');
+      actions.append(iconButton('edit', `编辑${pointRole(index, points, loop)} · ${point.name}`, () => choosePoint(index), !selectPoints));
+      if (index > 0 && !end) actions.append(iconButton('close', `删除${pointRole(index, points, loop)} · ${point.name}`,
+        () => revisePreviewPoint(index, null), !selectPoints || points.length <= 2));
+      row.append(actions);
+    } else if (!readOnly) {
       const actions = item('div', 'point-actions');
       if (index > 0 && !end) {
         actions.append(iconButton('up', `将${point.name}上移`, () => movePoint(index, -1), index === 1));
         actions.append(iconButton('down', `将${point.name}下移`, () => movePoint(index, 1), index >= points.length - (loop ? 1 : 2)));
       }
-      actions.append(iconButton('close', `删除${point.name}`, () => {
-        state.points.splice(index, 1);
-        updateRoute();
-      }));
+      actions.append(iconButton('close', `删除${point.name}`, () => editDraft(() => { state.points.splice(index, 1); }), !selectPoints));
       row.append(actions);
     }
     pointList.append(row);
   });
-  state.map?.render({ geometry: route?.geometry ?? [], points, preview: Boolean(candidate), loop, alternateGeometry: comparison?.geometry });
+  state.map?.render({ geometry: route?.geometry ?? [], issues, points, preview: Boolean(candidate), loop, selectedIndex,
+    selectable: selectPoints, draggable: selectPoints && (Boolean(candidate) || state.panel === 'manual'), alternateGeometry: comparison?.geometry });
   $('fit-map').disabled = !state.map || !points.length;
-  state.map?.select(Boolean(state.roadbook) && !candidate && !comparison && (state.choosing || points.length < 2));
+  state.map?.select(selectPoints && (state.choosing || !candidate && points.length < 2));
   const message = comparison ? (route ? '绿线为原路书 · 蓝紫线为导出轨迹' : '蓝紫线为导出轨迹') : !state.roadbook ? '选择或新建路线后可在地图上选点' :
     state.choosing ? (state.editIndex === null ? '在地图上选点，或搜索地点' : '请选择点位的新位置') :
-    candidate ? '正在预览候选路线' :
+    candidate ? state.pending ? '正在重算候选路线' : '点击选中 · 拖动点位调整路线' :
     state.pending ? '正在更新骑行路线' :
     state.routeError && !state.previousView ? '路线待调整' :
     !points.length ? '点击地图设置起点' :
     points.length === 1 ? '请添加下一个路线点' : '可在右侧调整路线点位';
   $('map-message').textContent = state.map || state.config?.mode !== 'amap' ? message : '高德底图暂不可用，可搜索地点';
+}
+
+function mapIssuesFor(route, attempts) {
+  const rules = verificationIssues(route);
+  const marked = rules.filter(rule => rule.mapSpan).map(rule => ({
+    type: 'unverified', message: `路段${verificationStatus(rule)} · ${rule.label}`, detail: rule.detail,
+    geometry: route.geometry.slice(rule.mapSpan[0], rule.mapSpan[1] + 1),
+  }));
+  const whole = rules.filter(rule => !rule.mapSpan).map(rule => `${rule.label} · ${rule.detail}`);
+  if (route?.climb === null && !whole.some(label => label.includes('爬升'))) whole.push('爬升待核实');
+  if (whole.length) marked.push({ type: 'overall', message: `整条路线 · ${whole.join('；')}` });
+  return [...attempts.map(issue => ({ ...issue, message: `${issue.type === 'disconnected' ? '未连通' : '接入待核实'} · ${issue.message}（虚线为位置示意）` })), ...marked];
 }
 function cancelPlanning() {
   const turn = state.turns.at(-1);
@@ -341,15 +476,36 @@ function cancelPlanning() {
   }
   state.planning = false;
   state.preview = null;
+  state.selection = null;
 }
 function choosePoint(index = null) {
-  if (!state.roadbook || state.previousView) return;
+  if (!pointInteractions()) return;
+  if (index !== null) state.selection = { points: editorPoints(), index };
   state.choosing = true;
   state.editIndex = index;
-  renderRoute();
+  renderPlan(); renderRoute();
   if (window.matchMedia('(max-width: 760px)').matches) $('search-form').scrollIntoView({ block: 'nearest' });
   $('search-input').focus({ preventScroll: true });
 }
+function selectMapPoint(points, index) {
+  if (!pointInteractions() || points !== editorPoints() || !points[index]) return;
+  state.selection = { points, index };
+  state.editIndex = null;
+  state.choosing = false;
+  renderPlan(); renderRoute();
+}
+
+function moveMapPoint(points, index, point) {
+  if (!pointInteractions() || points !== editorPoints() || !points[index]) return;
+  if (!point.coords.every(Number.isFinite)) return;
+  if (points[index].coords.every((value, axis) => Math.abs(value - point.coords[axis]) < 0.000001)) return;
+  if (state.preview) {
+    revisePreviewPoint(index, point);
+  } else if (state.panel === 'manual') {
+    editDraft(() => { state.points = points.map((entry, position) => position === index ? { ...entry, ...point } : entry); });
+  }
+}
+
 function pickPoint(point, fromSearch = false) {
   if (!state.roadbook) {
     if (fromSearch) {
@@ -358,24 +514,28 @@ function pickPoint(point, fromSearch = false) {
     }
     return;
   }
-  if (state.previousView || state.preview || currentExportReview()?.geometry || (!fromSearch && !state.choosing && state.points.length >= 2)) return;
-  if (state.editIndex !== null) {
-    state.points[state.editIndex] = point;
-  } else {
-    if (state.points.length >= 12) return toast('最多可以设置 12 个路线点。');
-    const where = !state.loop && state.points.length > 1 ? state.points.length - 1 : state.points.length;
-    state.points.splice(where, 0, point);
+  if (state.preview) {
+    if (state.choosing && state.editIndex !== null && pointInteractions()) revisePreviewPoint(state.editIndex, point);
+    return;
   }
+  if (!pointInteractions() || (!fromSearch && !state.choosing && state.points.length >= 2)) return;
+  const index = state.editIndex;
+  if (index === null && state.points.length >= 12) return toast('最多可以设置 12 个路线点。');
   $('search-results').hidden = true;
   $('search-input').value = '';
   state.searchRequest++;
   if (!state.context?.waitingFor) showEditor('manual');
-  updateRoute();
+  editDraft(() => {
+    if (index !== null) state.points[index] = point;
+    else {
+      const where = !state.loop && state.points.length > 1 ? state.points.length - 1 : state.points.length;
+      state.points.splice(where, 0, point);
+    }
+  });
 }
 function movePoint(index, delta) {
   const next = index + delta;
-  [state.points[index], state.points[next]] = [state.points[next], state.points[index]];
-  updateRoute();
+  editDraft(() => { [state.points[index], state.points[next]] = [state.points[next], state.points[index]]; });
 }
 async function updateRoute() {
   const book = state.roadbook;
@@ -395,6 +555,8 @@ async function updateRoute() {
   state.choosing = false;
   state.editIndex = null;
   state.routeError = '';
+  state.routeIssues = [];
+  book.diagnostic = null;
   state.previousView = false;
   state.pending = state.points.length > 1;
   if (!state.pending) state.active = null;
@@ -411,18 +573,17 @@ async function calculateRoute() {
   const request = Symbol();
   book.routeRequest = request;
   let result;
-  let routeError = '';
+  let failure;
   try {
     result = await api('/api/route', { points: state.points, loop: state.loop,
       trackId: state.dirty ? undefined : book.saved?.trackId });
-  } catch (error) {
-    routeError = error.message;
-  }
+  } catch (error) { failure = error; }
   if (request !== book.routeRequest) return;
   book.routeRequest = null;
   const editor = state.roadbook === book ? state : book;
   editor.pending = false;
-  editor.routeError = routeError;
+  editor.routeError = failure?.message ?? '';
+  editor.routeIssues = failure?.issues ?? [];
   if (result) {
     if (book.saved && !editor.dirty) {
       book.saved.route = { ...result, supplyPoints: book.saved.supplyPoints };
@@ -433,7 +594,7 @@ async function calculateRoute() {
   }
   if (editor === state) {
     renderPlan(); renderRoute();
-    if (result) state.map?.fit();
+    if (result || editor.routeIssues.length) state.map?.fit();
   }
 }
 async function search(event) {
@@ -461,26 +622,86 @@ function placeButton(place, handler) {
   return button;
 }
 function conversationBase(query) {
-  const latest = state.turns.findLast(turn => turn.revision === state.revision && !turn.failed);
   const saved = state.roadbook?.saved;
-  const route = saved ?? state;
-  const measuredRoute = saved ? saved.route : selectedRoute();
-  const pendingTurn = latest?.revision === state.revision && !latest.result?.candidates?.length && latest.result?.context
-    ? latest : null;
-  const context = pendingTurn?.result.context ?? (saved ? saved.appliedContext : state.context);
+  const candidate = previewRoute();
+  const target = conversationTarget();
+  const route = candidate ?? saved ?? state;
+  const index = selectedIndexFor(route.points);
+  const latest = state.turns.findLast(turn => turn.targetRoute === target && turn.revision === state.revision && !turn.failed &&
+    (turn.base?.selectedPoint?.index ?? null) === index);
+  const measuredRoute = candidate ?? (saved ? saved.route : selectedRoute());
+  const pendingTurn = latest?.result?.context && !latest.result.candidates?.length ? latest : null;
+  const context = pendingTurn?.result.context ?? (candidate ? candidateContext(state.preview.turn, candidate) : saved ? saved.appliedContext : state.context);
   const usesLocation = /当前位置|当前定位|所在位置/.test(query) || /当前位置|当前定位|所在位置/.test(context?.intent?.start ?? '');
   return {
     points: route.points, loop: route.loop,
     distance: measuredRoute?.distance, supplyPoints: measuredRoute?.supplyPoints ?? saved?.supplyPoints, trackId: measuredRoute?.trackId,
-    saved: Boolean(saved), context,
+    saved: Boolean(saved && !candidate), target: candidate ? 'preview' : saved ? 'saved' : 'draft', context,
+    ...(index === null ? {} : { selectedPoint: { index, id: route.points[index].id } }),
     selections: pendingTurn?.base.selections ?? {},
     location: usesLocation && state.config.mode === 'amap' ? state.location ?? undefined : undefined,
   };
 }
 
+function candidateContext(turn, candidate) {
+  const intent = turn.result.context?.intent;
+  const open = intent?.destination === 'open' && !candidate.loop;
+  const via = candidate.points.slice(1, candidate.loop ? undefined : -1);
+  return { intent: {
+    ...intent, start: '', end: '', loopAround: '', loop: candidate.loop, keepVia: !open,
+    via: open ? (via.some(point => point.visit) ? via.map(point => point.name) : intent.via) : [],
+  } };
+}
+
+async function revisePreviewPoint(index, replacement) {
+  const original = state.preview;
+  const source = originalPreview();
+  const candidate = previewRoute();
+  const book = state.roadbook;
+  if (!candidate?.points[index] || !pointInteractions()) return;
+  const context = candidateContext(original.turn, candidate);
+  const previous = previewHistory()?.current ?? { route: candidate, issues: [], index: selectedIndexFor(candidate.points) };
+  const request = Symbol();
+  book.previewRequest = request;
+  book.diagnostic = null;
+  state.pending = true;
+  state.choosing = false;
+  state.editIndex = null;
+  state.selection = { points: candidate.points, index };
+  state.searchRequest++;
+  $('search-results').hidden = true;
+  $('search-input').value = '';
+  renderPlan(); renderRoute();
+  let updated;
+  let error;
+  try {
+    updated = await api('/api/route', { previewEdit: {
+      base: { ...routeFrom(candidate), trackId: candidate.trackId }, index, replacement, intent: context.intent,
+    } });
+  } catch (failure) { error = failure; }
+  if (book.previewRequest !== request) return;
+  book.previewRequest = null;
+  const editor = state.roadbook === book ? state : book;
+  editor.pending = false;
+  if (editor.preview === original && (updated || error?.issues?.length)) {
+    const edits = book.previewEdits ??= new WeakMap();
+    const history = edits.get(source) ?? { undo: [], redo: [] };
+    recordEdit(history, previous);
+    history.current = { route: updated ?? candidate, issues: error?.issues ?? [], index: replacement ? index : null };
+    edits.set(source, history);
+    if (editor === state) state.selection = replacement ? { points: history.current.route.points, index } : null;
+  }
+  if (editor === state) {
+    if (error) toast(error.message);
+    renderPlan(); renderRoute();
+    if (error?.issues?.length) state.map?.fit();
+  }
+}
+
 function showPreview(turn, index) {
   if (state.roadbook) state.roadbook.exportReview = null;
   state.preview = index === null ? null : { turn, index };
+  state.selection = null;
   state.choosing = false;
   state.editIndex = null;
   $('search-results').hidden = true;
@@ -489,11 +710,16 @@ function showPreview(turn, index) {
 }
 
 function saveCandidate(turn, index) {
-  const candidate = turn.result.candidates[index];
+  const source = turn.result.candidates[index];
   const book = state.roadbook;
-  const canSave = () => state.roadbook === book && state.turns.includes(turn) && candidate.canApply &&
-    book.saved?.route !== candidate && !state.pending && !state.planning && !state.previousView;
+  const history = book?.previewEdits?.get(source);
+  const working = history?.current;
+  const candidate = working?.route ?? source;
+  const canSave = () => state.roadbook === book && state.turns.includes(turn) && canReviewCandidate(candidate) &&
+    book.previewEdits?.get(source)?.current === working && !working?.issues.length &&
+    book.saved?.route !== candidate && pointInteractions() && currentDiagnostic()?.target !== candidate;
   if (!canSave()) return;
+  const review = verificationIssues(candidate).map(({ label, status, detail }) => ({ label, status, detail }));
   const save = () => {
     if (!canSave()) return;
     state.revision++;
@@ -503,35 +729,76 @@ function saveCandidate(turn, index) {
     state.choosing = false;
     state.editIndex = null;
     state.routeError = '';
-    const { intent } = turn.result.context;
-    const open = intent.destination === 'open' && !candidate.loop;
-    const via = candidate.points.slice(1, candidate.loop ? undefined : -1);
-    state.appliedContext = { intent: {
-      ...intent, start: '', end: '', loopAround: '', keepVia: !open,
-      via: open ? (via.some(point => point.visit) ? via.map(point => point.name) : intent.via) : [],
-    } };
+    state.routeIssues = [];
+    book.diagnostic = null;
+    state.appliedContext = candidateContext(turn, candidate);
     state.context = state.appliedContext;
+    if (history) { history.undo.length = 0; history.redo.length = 0; }
     cancelPlanning();
-    commitRoadbook();
+    commitRoadbook(review.length ? review : undefined);
     renderPlan(); renderRoute(); state.map?.fit();
   };
-  if (state.dirty && (book.saved || turn.revision !== state.revision)) {
+  const overwrite = state.dirty && (book.saved || turn.revision !== state.revision);
+  if (review.length) {
+    const checked = item('input');
+    checked.type = 'checkbox';
+    const content = dialog('核实路线后保存', book.saved ? '替换已保存路线' : '保存路线', () => {
+      if (checked.checked) save();
+    });
+    const issues = item('ul', 'verification-issues');
+    for (const rule of review) {
+      const row = item('li', rule.status);
+      row.append(item('strong', '', `${rule.label} · ${verificationStatus(rule)}`), item('p', '', rule.detail));
+      issues.append(row);
+    }
+    const confirmation = item('label', 'verification-confirm');
+    confirmation.append(checked, item('span', '', '我已核实上述问题，确认采用这条路线'));
+    content.append(issues);
+    if (overwrite) content.append(item('p', '', '保存这条候选路线会覆盖当前未保存的手动修改。'));
+    content.append(confirmation);
+    const button = $('dialog-confirm');
+    button.disabled = true;
+    checked.addEventListener('change', () => { button.disabled = !checked.checked; });
+    $('dialog-title').focus();
+  } else if (overwrite) {
     dialog('保存候选路线', '保存路线', save).textContent = '保存这条候选路线会覆盖当前未保存的手动修改。';
   } else {
     save();
   }
 }
 
-function renderCandidate(turn, candidate, index) {
+const candidateTitle = (candidate, index) => candidate.loop ? `环线 ${index + 1}` : `终点 · ${destinationOf(candidate)}`;
+
+function renderCandidate(turn, source, index) {
+  const saved = state.roadbook?.saved;
+  const working = state.roadbook?.previewEdits?.get(source)?.current;
+  const candidate = working?.route ?? source;
   const selected = state.preview?.turn === turn && state.preview.index === index;
   const card = item('article', selected ? 'candidate selected' : 'candidate');
-  const title = candidate.loop ? `环线 ${index + 1}` : `终点 · ${destinationOf(candidate)}`;
+  const title = candidateTitle(candidate, index);
   card.append(item('h3', '', title));
   card.append(item('p', 'score', `${asKm(candidate.distance)} km · ${candidate.climb === null ? '爬升待核实' : '预估爬升 ' + Math.round(candidate.climb) + ' m'}`));
   const via = candidate.points.slice(1, candidate.loop ? undefined : -1);
-  if (via.length) card.append(item('p', 'candidate-via', '途经 ' + via.map(pointLabel).join('、')));
+  if (selected) {
+    const points = item('div', 'candidate-points');
+    candidate.points.forEach((point, pointIndex) => {
+      const role = pointRole(pointIndex, candidate.points, candidate.loop);
+      const button = action(`${role} · ${pointLabel(point)}`, '', () => {
+        selectMapPoint(candidate.points, pointIndex);
+        cardFocusPoint(pointIndex);
+      });
+      button.dataset.routePoint = pointIndex;
+      button.setAttribute('aria-pressed', selectedIndexFor(candidate.points) === pointIndex);
+      button.disabled = !pointInteractions();
+      points.append(button);
+    });
+    card.append(points);
+  } else if (via.length) card.append(item('p', 'candidate-via', '途经 ' + via.map(pointLabel).join('、')));
   const rules = item('ul');
-  for (const rule of candidate.rules) rules.append(item('li', rule.status, rule.label + ' · ' + rule.detail));
+  for (const rule of candidate.rules) {
+    const needsReview = rule.status === 'fail' || rule.status === 'unknown';
+    rules.append(item('li', rule.status, needsReview ? verificationReason(rule) : rule.label + ' · ' + rule.detail));
+  }
   if (candidate.rules.length) card.append(rules);
   const buttons = item('div', 'candidate-actions');
   const preview = action(selected ? '结束预览' : '预览', 'button secondary', () => {
@@ -542,16 +809,20 @@ function renderCandidate(turn, candidate, index) {
   });
   preview.disabled = state.planning || state.pending || state.previousView;
   buttons.append(preview);
-  const saved = state.roadbook?.saved;
   if (saved?.route === candidate) {
-    buttons.append(item('span', 'candidate-saved', '已保存'));
+    buttons.append(item('span', 'candidate-saved', saved.verification?.length ? '已保存 · 用户已核实' : '已保存'));
   } else {
-    const save = action(saved ? '替换已保存路线' : '保存路线', 'button dark', () => saveCandidate(turn, index));
-    save.disabled = !candidate.canApply || state.planning || state.pending || state.previousView;
+    const save = action(candidateSaveLabel(candidate, saved, '保存路线'), 'button dark', () => saveCandidate(turn, index));
+    save.disabled = !canReviewCandidate(candidate) || !pointInteractions() ||
+      Boolean(working?.issues.length) || currentDiagnostic()?.target === candidate;
     buttons.append(save);
   }
   card.append(buttons);
   return card;
+}
+
+function cardFocusPoint(index) {
+  document.querySelector(`.candidate.selected [data-route-point="${index}"]`)?.focus({ preventScroll: true });
 }
 
 function ridePrompt(request) {
@@ -563,7 +834,7 @@ function renderPrompts() {
   const latest = state.turns.at(-1);
   const origin = $('prompt-origin');
   const shortcuts = $('agent-shortcuts');
-  const editing = Boolean(state.roadbook?.saved || state.points.length > 1);
+  const editing = Boolean(previewRoute() || state.roadbook?.saved || state.points.length > 1);
   const waiting = latest?.revision === state.revision &&
     (latest.result?.context?.waitingFor || latest.result?.ambiguous?.length || latest.failed);
   shortcuts.hidden = !state.roadbook || (editing ? Boolean(waiting) : Boolean(latest));
@@ -602,12 +873,24 @@ function renderPlan(follow = false) {
   const target = $('agent-target');
   target.replaceChildren();
   const preview = previewRoute();
+  const points = editorPoints();
+  const picked = selectedIndexFor(points);
   if (preview) {
-    target.append(item('span', '', '候选预览 · ' + destinationOf(preview)),
+    target.append(item('span', '', `修改候选 · ${candidateTitle(preview, state.preview.index)} · ${asKm(preview.distance)} km`),
       action('结束预览', 'inline-action', () => showPreview(null, null)));
+    target.lastChild.disabled = state.pending || state.planning;
   }
   target.hidden = !preview;
-  $('agent-input').placeholder = state.roadbook?.saved ? '说说想怎么改已保存的路线' :
+  const selection = $('agent-point');
+  selection.replaceChildren();
+  if (picked !== null) {
+    selection.append(item('span', '', `已选${pointRole(picked, points, preview?.loop ?? state.roadbook?.saved?.loop ?? state.loop)} · ${pointLabel(points[picked])}`),
+      action('取消选点', 'inline-action', () => { state.selection = null; renderPlan(); renderRoute(); }));
+    selection.lastChild.disabled = state.pending || state.planning;
+  }
+  selection.hidden = picked === null;
+  $('agent-input').placeholder = picked !== null ? '想把这个点改到哪里？' : preview ? '说说想怎么改这条候选路线' :
+    state.roadbook?.saved ? '说说想怎么改已保存的路线' :
     latest ? '补充你的骑行需求' : '说说想从哪出发、骑多远';
   for (const turn of state.turns) {
     const entry = item('div', 'agent-turn');
@@ -616,7 +899,7 @@ function renderPlan(follow = false) {
     if (turn.result?.question) entry.append(item('p', 'agent-reply', turn.result.question));
     if (turn.failed && turn === latest && turn.revision === state.revision) {
       const retry = action('重试', 'button secondary', () => runPlan(turn.query, turn));
-      retry.disabled = state.pending || state.planning;
+      retry.disabled = state.pending || state.planning || !canContinueTurn(turn);
       entry.append(retry);
     }
     if (turn.revision === state.revision) {
@@ -628,7 +911,7 @@ function renderPlan(follow = false) {
             base: { ...turn.base, context: turn.result.context,
               selections: { ...turn.base.selections, [group.name]: place.id } },
           }));
-          choice.disabled = state.planning || state.pending || state.previousView;
+          choice.disabled = state.planning || state.pending || state.previousView || !canContinueTurn(turn);
           entry.append(choice);
         }
       }
@@ -655,14 +938,17 @@ function renderPlan(follow = false) {
 async function runPlan(query, continuation = null) {
   const book = state.roadbook;
   if (!book || state.pending || state.previousView || state.planning) return;
+  const targetRoute = conversationTarget();
+  if (continuation && !canContinueTurn(continuation)) return;
   const base = continuation?.base ?? conversationBase(query);
   const history = state.turns.slice(-6).map(turn => ({
     prompt: turn.prompt, reply: turn.result?.question,
     candidates: turn.result?.candidates?.map(route => destinationOf(route)),
   }));
-  const turn = { prompt: continuation?.prompt ?? query, query, base, revision: state.revision,
+  const turn = { prompt: continuation?.prompt ?? query, query, base, targetRoute, revision: state.revision,
     resume: continuation?.resume === true, pending: true };
   state.turns.push(turn);
+  book.diagnostic = null;
   state.planning = true;
   renderPlan(true); renderRoute();
   let result;
@@ -672,25 +958,27 @@ async function runPlan(query, continuation = null) {
       ...base, prompt: query, resume: turn.resume, history,
     });
   } catch (error) {
-    result = { question: error.message };
+    result = { question: error.message, issues: error.issues };
     failed = true;
   }
   if (!turn.pending) return;
   const editor = state.roadbook === book ? state : book;
   Object.assign(turn, { result, failed, pending: false });
   editor.planning = false;
+  if (result.issues?.length) book.diagnostic = { target: targetRoute, issues: result.issues };
   if (!failed) editor.context = result.context;
   const candidates = result.candidates;
-  if (candidates?.length && editor.panel === 'ai') {
+  if (candidates?.length && (editor.panel === 'ai' || turn.base.target === 'preview')) {
     const usable = candidates.findIndex(route => route.canApply);
     if (editor.preview) editor.preview.turn.expanded = false;
     editor.preview = { turn, index: Math.max(0, usable) };
+    editor.selection = null;
     editor.choosing = false;
     editor.editIndex = null;
   }
   if (editor === state) {
     renderPlan(true); renderRoute();
-    if (state.preview?.turn === turn) state.map?.fit();
+    if (state.preview?.turn === turn || currentDiagnostic()) state.map?.fit();
   }
 }
 function dialog(title, label, confirm) {
@@ -698,6 +986,7 @@ function dialog(title, label, confirm) {
   const content = $('dialog-content');
   $('dialog-title').textContent = title;
   $('dialog-confirm').textContent = label;
+  $('dialog-confirm').disabled = false;
   content.replaceChildren();
   element.returnValue = '';
   element.addEventListener('close', () => { if (element.returnValue === 'confirm') confirm(content); }, { once: true });
@@ -809,7 +1098,7 @@ $('add-point').addEventListener('click', () => {
   if (state.choosing && state.editIndex === null) { state.choosing = false; renderRoute(); }
   else choosePoint();
 });
-$('loop').addEventListener('change', () => { state.loop = $('loop').checked; updateRoute(); });
+$('loop').addEventListener('change', () => editDraft(() => { state.loop = $('loop').checked; }));
 $('new-roadbook').addEventListener('click', () => {
   const book = { id: crypto.randomUUID(), name: uniqueRoadbookName('未命名路线'), points: [], loop: false, autoName: true };
   state.roadbooks.unshift(book);
@@ -821,8 +1110,27 @@ $('edit-roadbook').addEventListener('click', () => {
   $('manual-tab').focus();
 });
 $('save-roadbook').addEventListener('click', () => {
+  if (state.preview) return saveCandidate(state.preview.turn, state.preview.index);
   commitRoadbook();
   renderRoute();
+});
+$('manual-end-preview').addEventListener('click', () => showPreview(null, null));
+for (const direction of ['undo', 'redo']) {
+  for (const scope of ['map', 'manual']) $(scope + '-' + direction).addEventListener('click', () => stepHistory(direction));
+}
+document.addEventListener('keydown', event => {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing ||
+      event.target.closest?.('input, textarea, select, [contenteditable], dialog')) return;
+  const key = event.key.toLowerCase();
+  const direction = key === 'z' ? (event.shiftKey ? 'redo' : 'undo') : key === 'y' ? 'redo' : null;
+  if (!direction || !pointInteractions() || !activeHistory()?.[direction].length) return;
+  event.preventDefault();
+  stepHistory(direction);
+});
+$('clear-map-issues').addEventListener('click', () => {
+  if (previewHistory()?.current.issues.length) return stepHistory('undo');
+  if (state.roadbook) state.roadbook.diagnostic = null;
+  renderPlan(); renderRoute();
 });
 $('delete-roadbook').addEventListener('click', () => {
   const book = state.roadbook;
@@ -830,6 +1138,7 @@ $('delete-roadbook').addEventListener('click', () => {
     if (state.roadbook !== book) return;
     cancelPlanning();
     book.routeRequest = null;
+    book.previewRequest = null;
     state.roadbooks = state.roadbooks.filter(entry => entry !== book);
     openRoadbook(null);
     $('new-roadbook').focus({ preventScroll: true });
@@ -967,9 +1276,9 @@ async function initialize() {
     loadRoadbooks();
     $('new-roadbook').disabled = false;
     if (demo) {
-      state.map = offlineMap($('demo-map'), pickPoint);
+      state.map = offlineMap($('demo-map'), pickPoint, selectMapPoint, moveMapPoint);
     } else {
-      state.map = await liveMap($('live-map'), state.config.mapKey, pickPoint);
+      state.map = await liveMap($('live-map'), state.config.mapKey, pickPoint, selectMapPoint, moveMapPoint);
       $('nationwide-map').hidden = false;
       $('search-input').placeholder = '搜索全国地名或地点';
     }

@@ -23,6 +23,9 @@ const labels = [
   ['龙井村',[120.091,30.217]], ['白马湖',[120.209,30.172]], ['九溪',[120.109,30.185]],
 ];
 const color = { route: '#487d60', routeOutline: '#f9fff8', preview: '#6b59b2' };
+const issueColor = { unverified: '#ae6500', disconnected: '#bc3434' };
+const pinLabel = (index, length, loop) => index === 0 ? (loop ? '环' : '起') : !loop && index === length - 1 ? '终' : String(index);
+const mapPoint = (coords, name = '地图选点') => ({ id: `map-${coords.map(value => value.toFixed(6)).join('-')}`, name, coords });
 const gridRoads = [];
 for (let column = 0; column < 31; column++) {
   const lon = 119.92 + column * 0.015;
@@ -58,7 +61,7 @@ function mapLabel(ctx, coordinates, label, ink, font) {
   ctx.fillText(label, ...coordinates);
 }
 
-export function offlineMap(canvas, onPick) {
+export function offlineMap(canvas, onPick, onSelect, onMove) {
   const ctx = canvas.getContext('2d');
   let state = { geometry: [], points: [], preview: false };
   let zoom = 1;
@@ -127,14 +130,25 @@ export function offlineMap(canvas, onPick) {
       stroke(state.geometry, color.routeOutline, 9);
       stroke(state.geometry, state.preview ? color.preview : color.route, 5.5);
     }
+    for (const issue of state.issues ?? []) {
+      if (!issue.geometry?.length) continue;
+      ctx.setLineDash([8, 6]);
+      stroke(issue.geometry, '#fff', 10);
+      stroke(issue.geometry, issueColor[issue.type], 7);
+      ctx.setLineDash([]);
+    }
     state.points.forEach((point, index) => {
-      const [x,y] = project(point.coords);
+      const [x,y] = pointer?.dragged && pointer.index === index ? [pointer.x, pointer.y] : project(point.coords);
       const endpoint = index === 0 || (!state.loop && index === state.points.length - 1);
+      if (state.selectedIndex === index || pointer?.dragged && pointer.index === index) {
+        ctx.beginPath(); ctx.arc(x, y, 15, 0, Math.PI * 2);
+        ctx.strokeStyle = '#3e2b71'; ctx.lineWidth = 3; ctx.stroke();
+      }
       ctx.beginPath(); ctx.arc(x,y, endpoint ? 11 : 9, 0, Math.PI * 2);
       ctx.fillStyle = state.preview ? color.preview : index === 0 ? '#355f45' : index === state.points.length - 1 && !state.loop ? '#242825' : '#5e8265';
       ctx.fill(); ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = 'white'; ctx.font = '700 10px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(index === 0 ? '起' : endpoint ? '终' : String(index), x, y + .5);
+      ctx.fillText(pinLabel(index, state.points.length, state.loop), x, y + .5);
     });
     if (userLocation) {
       const [x, y] = project(userLocation);
@@ -149,37 +163,59 @@ export function offlineMap(canvas, onPick) {
   }
   const resize = new ResizeObserver(draw);
   resize.observe(canvas);
+  function localPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return [event.clientX - rect.left, event.clientY - rect.top];
+  }
   canvas.addEventListener('pointerdown', event => {
-    pointer = { x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, moved: false };
+    if (pointer || event.button !== 0) return;
+    const [x, y] = localPoint(event);
+    const index = state.selectable ? state.points.findLastIndex(point => {
+      const [px, py] = project(point.coords);
+      return Math.hypot(px - x, py - y) < 15;
+    }) : -1;
+    pointer = { id: event.pointerId, x, y, startX: x, startY: y, index, points: state.points, moved: false };
     canvas.setPointerCapture(event.pointerId);
   });
   canvas.addEventListener('pointermove', event => {
-    if (!pointer) return;
-    if (Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) > 5) pointer.moved = true;
+    if (pointer?.id !== event.pointerId) return;
+    const [x, y] = localPoint(event);
+    if (Math.hypot(x - pointer.startX, y - pointer.startY) > 5) pointer.moved = true;
     if (pointer.moved) {
-      const scale = base() * zoom;
-      focus[0] -= (event.clientX - pointer.x) / scale;
-      focus[1] += (event.clientY - pointer.y) / (scale * 1.13);
-      draw();
-    }
-    pointer.x = event.clientX; pointer.y = event.clientY;
-  });
-  canvas.addEventListener('pointercancel', () => { pointer = null; });
-  canvas.addEventListener('pointerup', event => {
-    if (pointer && !pointer.moved) {
-      const rect = canvas.getBoundingClientRect();
-      const point = unproject(event.clientX - rect.left, event.clientY - rect.top);
-      if (inDemoBounds(point)) {
-        const nearest = demoPlaces.reduce((best, place) =>
-          Math.hypot(place.coords[0] - point[0], place.coords[1] - point[1]) <
-          Math.hypot(best.coords[0] - point[0], best.coords[1] - point[1]) ? place : best);
-        onPick(nearest);
+      if (pointer.index >= 0 && state.draggable && pointer.points === state.points) {
+        pointer.dragged = true;
+      } else {
+        const scale = base() * zoom;
+        focus[0] -= (x - pointer.x) / scale;
+        focus[1] += (y - pointer.y) / (scale * 1.13);
       }
     }
+    pointer.x = x;
+    pointer.y = y;
+    if (pointer.moved) draw();
+  });
+  canvas.addEventListener('pointercancel', event => {
+    if (pointer?.id !== event.pointerId) return;
     pointer = null;
+    draw();
+  });
+  canvas.addEventListener('pointerup', event => {
+    if (pointer?.id !== event.pointerId) return;
+    const { dragged, moved, index, points } = pointer;
+    pointer = null;
+    if (points !== state.points) { draw(); return; }
+    const point = unproject(...localPoint(event));
+    if (!moved && index >= 0) { onSelect(points, index); return; }
+    if (inDemoBounds(point) && (dragged || !moved)) {
+      const distance = place => Math.hypot(place.coords[0] - point[0], place.coords[1] - point[1]);
+      const nearest = demoPlaces.reduce((best, place) => distance(place) < distance(best) ? place : best);
+      if (dragged) onMove(points, index, nearest);
+      else onPick(nearest);
+    }
+    draw();
   });
   return {
-    render(next) { state = next; draw(); },
+    render(next) { state = next; canvas.classList.toggle('can-drag-points', next.draggable); draw(); },
     zoom(delta) { zoom = Math.max(0.55, Math.min(4, zoom * (delta === 1 ? 1.28 : 0.78))); draw(); },
     centerOn(coords) { focus = [...coords]; draw(); },
     showLocation(coords) {
@@ -195,7 +231,8 @@ export function offlineMap(canvas, onPick) {
     },
     select(active) { canvas.classList.toggle('can-select', active); },
     fit() {
-      const points = state.geometry.length ? state.geometry : state.points.map(point => point.coords);
+      const path = state.geometry.length ? state.geometry : state.points.map(point => point.coords);
+      const points = [...path, ...(state.issues ?? []).flatMap(issue => issue.geometry ?? [])];
       if (!points.length) return;
       const longitudes = points.map(point => point[0]);
       const latitudes = points.map(point => point[1]);
@@ -210,7 +247,7 @@ export function offlineMap(canvas, onPick) {
   };
 }
 
-export async function liveMap(element, key, onPick) {
+export async function liveMap(element, key, onPick, onSelect, onMove) {
   window._AMapSecurityConfig = { serviceHost: location.origin + '/_AMapService' };
   const sdk = await new Promise((resolve, reject) => {
     const script = document.createElement('script');
@@ -227,10 +264,7 @@ export async function liveMap(element, key, onPick) {
   showNationwide();
   let overlays = [];
   let locationMarker = null;
-  map.on('click', event => onPick({
-    id: `map-${event.lnglat.lng.toFixed(6)}-${event.lnglat.lat.toFixed(6)}`,
-    name: '地图选点', coords: [event.lnglat.lng, event.lnglat.lat],
-  }));
+  map.on('click', event => onPick(mapPoint([event.lnglat.lng, event.lnglat.lat])));
   return {
     select(active) { map.setDefaultCursor(active ? 'crosshair' : 'grab'); },
     zoom(delta) { map.setZoom(map.getZoom() + delta); },
@@ -248,9 +282,23 @@ export async function liveMap(element, key, onPick) {
     fit() {
       if (overlays.length) map.setFitView(overlays, false, [65,70,65,70], 16);
     },
-    render({ geometry, points, preview, alternateGeometry }) {
+    render({ geometry, points, preview, loop, selectedIndex, selectable, draggable, alternateGeometry, issues = [] }) {
       if (overlays.length) map.remove(overlays);
-      overlays = points.map(point => new sdk.Marker({ position: point.coords, title: point.name }));
+      overlays = points.map((point, index) => {
+        const label = document.createElement('span');
+        const selected = index === selectedIndex;
+        label.className = `route-pin${preview ? ' preview' : ''}${selected ? ' selected' : ''}`;
+        label.textContent = pinLabel(index, points.length, loop);
+        const marker = new sdk.Marker({ position: point.coords, title: point.name, content: label, anchor: 'center',
+          clickable: selectable, draggable, bubble: false, cursor: draggable ? 'move' : 'pointer', zIndex: selected ? 130 : 100 });
+        if (selectable) marker.on('click', () => onSelect(points, index));
+        if (draggable) marker.on('dragend', () => {
+          const { lng, lat } = marker.getPosition();
+          const role = index === 0 ? (loop ? '起终点' : '起点') : !loop && index === points.length - 1 ? '终点' : `途经点 ${index}`;
+          onMove(points, index, mapPoint([lng, lat], '地图' + role));
+        });
+        return marker;
+      });
       if (geometry.length > 1) overlays.push(new sdk.Polyline({
         path: geometry, strokeColor: preview ? color.preview : color.route,
         isOutline: true, outlineColor: '#fff', borderWeight: 2, strokeWeight: 6,
@@ -259,6 +307,12 @@ export async function liveMap(element, key, onPick) {
         path: alternateGeometry, strokeColor: color.preview, strokeWeight: 5,
         strokeStyle: 'dashed', strokeDasharray: [8, 5], zIndex: 65,
       }));
+      for (const issue of issues) {
+        if (issue.geometry?.length > 1) overlays.push(new sdk.Polyline({
+          path: issue.geometry, strokeColor: issueColor[issue.type], strokeWeight: 7, strokeStyle: 'dashed',
+          strokeDasharray: [8, 6], isOutline: true, outlineColor: '#fff', borderWeight: 1, zIndex: 75, bubble: true,
+        }));
+      }
       if (overlays.length) map.add(overlays);
     },
   };

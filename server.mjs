@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { getProvider, servicesConfigured, MapServiceError } from './lib/providers.mjs';
 import { configuredElevationSource } from './lib/elevation.mjs';
 import { ExportRouteError, exportRouterHost, prepareExport, preparedGpx } from './lib/gpx-export.mjs';
-import { buildRoute, demoGpx, normalizePoints, PlanningError } from './lib/planner.mjs';
+import { buildRoute, demoGpx, normalizePoints, PlanningError, revisePoint } from './lib/planner.mjs';
+import { normalizeIntent } from './lib/intent.mjs';
 import { modelConfigured, ModelServiceError, runAgent } from './lib/agent.mjs';
 import { validPosition } from './lib/geo.mjs';
 
@@ -94,11 +95,20 @@ async function handle(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/api/route') {
     const body = await readJson(req);
+    if (body.previewEdit) {
+      const { base, index, replacement, intent } = body.previewEdit;
+      const route = readTrack(base ?? {}) ?? { points: normalizePoints(base?.points), loop: base?.loop === true,
+        supplyPoints: Array.isArray(base?.supplyPoints) ? base.supplyPoints : [] };
+      const point = replacement === null ? null : normalizePoints([replacement])[0];
+      if (!Number.isInteger(index)) throw new PlanningError('请选择要调整的路线点。');
+      const candidate = await revisePoint(provider, route, index, point, normalizeIntent(intent));
+      return json(res, 200, cacheTrack(candidate));
+    }
     return json(res, 200, cacheTrack(readTrack(body) ?? await buildRoute(provider, body.points, body.loop === true)));
   }
   if (req.method === 'POST' && url.pathname === '/api/plan') {
     const body = await readJson(req);
-    const result = await runAgent(provider, body, undefined, body.saved === true ? readTrack(body) : null);
+    const result = await runAgent(provider, body, undefined, readTrack(body));
     if (result.candidates) result.candidates = result.candidates.map(cacheTrack);
     return json(res, 200, result);
   }
@@ -128,7 +138,8 @@ async function handle(req, res) {
 
 createServer((req, res) => handle(req, res).catch(error => {
   if (res.headersSent) return res.end();
-  if (error instanceof PlanningError) return json(res, 422, { error: error.message });
+  if (error instanceof PlanningError) return json(res, 422, { error: error.message,
+    ...(error.issues.length ? { issues: error.issues } : {}) });
   if (error instanceof ExportRouteError) return json(res, error.status, { error: error.message });
   if (error instanceof MapServiceError) {
     console.warn('AMap request failed:', error.code);

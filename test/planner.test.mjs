@@ -25,7 +25,7 @@ test('parsing a named waypoint preserves characters such as 和', async () => {
   assert.ok(route?.points.some(place => ['shop', 'river'].includes(place.id)));
 });
 
-test('loop candidates close, and unmet or unverifiable climb ceilings block application', async () => {
+test('loop candidates close, and unmet or unverifiable limits fail automated verification', async () => {
   const intent = await readIntent('从西湖文化广场出发，骑40公里左右的环线。');
   const generated = await planFromIntent(demo, intent);
   assert.ok(generated.candidates.some(route => route.canApply));
@@ -35,6 +35,22 @@ test('loop candidates close, and unmet or unverifiable climb ceilings block appl
   for (const [distance, climb, canApply] of [[50000, 400, true], [50040, 400, false], [49900, 400.4, false], [49900, null, false]]) {
     assert.equal(checkRoute({ distance, climb }, constrained).canApply, canApply);
   }
+  const reviewed = checkRoute({ distance: 50040, climb: null }, constrained);
+  assert.deepEqual(reviewed.rules.filter(rule => rule.hard).map(({ status, detail }) => [status, detail]), [
+    ['fail', '里程为 50.04 km，超过上限'],
+    ['unknown', '缺少高程数据，无法核实爬升'],
+  ]);
+});
+
+test('connected routes remain available for review when no required supply stop is found', async () => {
+  const intent = await readIntent('从西湖文化广场出发，骑到湘湖，中途需要补给。');
+  const result = await planFromIntent({ ...demo, nearby: async () => [] }, intent);
+  assert.ok(result.candidates.length);
+  for (const route of result.candidates) {
+    assert.ok(route.geometry.length > 1);
+    assert.equal(route.canApply, false);
+    assert.ok(route.rules.some(rule => rule.status === 'unknown' && rule.detail.includes('没有已匹配的补给点')));
+  }
 });
 
 test('disconnected segments never produce an exportable route', async () => {
@@ -42,7 +58,18 @@ test('disconnected segments never produce an exportable route', async () => {
     leg: async (from, to) => ({ geometry: [from.id === 'lake' ? [120.133, 30.236] : from.coords, to.coords], distance: 1000 }),
     elevations: async () => null,
   };
-  await assert.rejects(buildRoute(provider, byId('hub', 'lake', 'river'), false), /拼接|无法连接/);
+  await assert.rejects(buildRoute(provider, byId('hub', 'lake', 'river'), false), error => {
+    assert.match(error.message, /拼接/);
+    assert.equal(error.issues[0].type, 'disconnected');
+    assert.deepEqual(error.issues[0].geometry, [[120.132, 30.236], [120.133, 30.236]]);
+    return true;
+  });
+  await assert.rejects(buildRoute({ ...provider, leg: async () => null }, byId('hub', 'lake', 'river'), false), error => {
+    assert.deepEqual(error.issues.map(issue => issue.geometry), [
+      byId('hub', 'lake').map(point => point.coords), byId('lake', 'river').map(point => point.coords),
+    ]);
+    return true;
+  });
 });
 
 test('GPX includes an escapable demo name and track points in route order', () => {

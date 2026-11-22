@@ -35,6 +35,11 @@
               <div><dt>终点</dt><dd id="roadbook-end"></dd></div>
             </dl>
             <p class="roadbook-status" id="roadbook-status" hidden></p>
+            <details class="roadbook-verification" id="roadbook-verification" hidden>
+              <summary>用户已核实</summary>
+              <p>保存时的系统校验结果</p>
+              <ul id="roadbook-verification-issues"></ul>
+            </details>
             <div class="roadbook-actions">
               <button type="button" id="edit-roadbook"><span data-icon="edit"></span>编辑</button>
               <button type="button" id="export" aria-label="导出 GPX"><span data-icon="download"></span>导出</button>
@@ -57,11 +62,20 @@
             <div id="search-results" class="search-results" hidden></div>
           </div>
           <div class="map-controls">
+            <div class="map-history" id="map-history" role="group" aria-label="路线编辑历史" hidden>
+              <button type="button" id="map-undo" aria-label="撤回" title="撤回" disabled><span data-icon="undo"></span></button>
+              <button type="button" id="map-redo" aria-label="重做" title="重做" disabled><span data-icon="redo"></span></button>
+            </div>
             <div class="zoom"><button type="button" id="zoom-in" aria-label="放大地图" disabled><span data-icon="plus"></span></button><button type="button" id="zoom-out" aria-label="缩小地图" disabled><span data-icon="minus"></span></button></div>
             <button type="button" id="fit-map" aria-label="查看整条路线" title="查看整条路线" disabled><span data-icon="fit"></span></button>
             <button type="button" id="locate-map" aria-label="定位到当前位置" title="定位到当前位置" disabled><span data-icon="locate"></span></button>
           </div>
-          <div class="map-status"><span class="status-dot"></span><span id="map-message">正在加载地图</span></div>
+          <div class="map-feedback">
+            <ul id="map-issues" class="map-issues" aria-label="路线核验标记" aria-live="polite" hidden></ul>
+            <div class="map-status"><span class="status-dot"></span><span id="map-message">正在加载地图</span>
+              <button id="clear-map-issues" class="inline-action" type="button" hidden>清除标记</button>
+            </div>
+          </div>
           <span id="map-credit" class="map-credit">杭州示例路网</span>
         </section>
 
@@ -75,9 +89,14 @@
               <div><span class="card-label" id="draft-status">草稿</span><h2 id="route-title">我的骑行路书</h2></div>
               <button class="icon-button" id="rename" type="button" aria-label="重命名路线"><span data-icon="edit"></span></button>
             </div>
+            <button class="inline-action" id="manual-end-preview" type="button" hidden>结束预览</button>
+            <div class="manual-history" role="group" aria-label="路线编辑历史">
+              <button type="button" id="manual-undo" disabled><span data-icon="undo"></span>撤回</button>
+              <button type="button" id="manual-redo" disabled><span data-icon="redo"></span>重做</button>
+            </div>
             <p class="draft-climb" id="draft-climb" hidden aria-live="polite"></p>
             <div class="points-header"><h3>路线点位</h3><label class="loop-toggle"><input type="checkbox" id="loop"><span data-icon="repeat"></span>返回起点</label></div>
-            <p class="route-note" id="route-note" hidden role="status"></p>
+            <div class="route-note" id="route-note" hidden role="status"></div>
             <ol id="points" class="points"></ol>
             <button class="button add-point" id="add-point" type="button"><span data-icon="plus"></span>添加点位</button>
             <button class="button dark save-roadbook" id="save-roadbook" type="button">保存路书</button>
@@ -87,6 +106,7 @@
             <div id="agent-results" class="agent-results" role="log" aria-label="路线对话" aria-live="off" tabindex="0" hidden></div>
             <span id="agent-announcement" class="sr-only" role="status"></span>
             <div id="agent-target" class="agent-target" hidden></div>
+            <div id="agent-point" class="agent-target agent-point" aria-live="polite" hidden></div>
             <div class="agent-shortcuts" id="agent-shortcuts" hidden>
               <div class="prompt-origin" id="prompt-origin" hidden>
                 <span id="prompt-origin-label" aria-live="polite"></span>
@@ -102,7 +122,7 @@
     </main>
   </div>
 
-  <dialog id="dialog"><form method="dialog" class="dialog-body"><div class="dialog-heading"><h2 id="dialog-title"></h2><button type="submit" value="cancel" class="icon-button" aria-label="关闭"><span data-icon="close"></span></button></div><div id="dialog-content"></div><div class="dialog-actions"><button class="button secondary" value="cancel" type="submit">取消</button><button class="button dark" value="confirm" id="dialog-confirm" type="submit">确定</button></div></form></dialog>
+  <dialog id="dialog" aria-labelledby="dialog-title"><form method="dialog" class="dialog-body"><div class="dialog-heading"><h2 id="dialog-title" tabindex="-1"></h2><button type="submit" value="cancel" class="icon-button" aria-label="关闭"><span data-icon="close"></span></button></div><div id="dialog-content"></div><div class="dialog-actions"><button class="button secondary" value="cancel" type="submit">取消</button><button class="button dark" value="confirm" id="dialog-confirm" type="submit">确定</button></div></form></dialog>
   <div id="toast" role="status" class="toast" hidden></div>
   <script type="module" src="/app.js"></script>
 </body>
