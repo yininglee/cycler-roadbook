@@ -4,7 +4,7 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --env-file-if-exists=.env.local server.mjs",
+    "dev": "node --watch --env-file-if-exists=.env --env-file-if-exists=.env.local server.mjs",
     "check": "node --check server.mjs && node --check lib/agent.mjs && node --check lib/intent.mjs && node --check lib/planner.mjs && node --check lib/providers.mjs && node --check public/app.js && node --check public/map.js && node --test"
   }
 }

@@ -15,10 +15,6 @@
       <span class="environment" id="environment"><span></span>正在连接</span>
     </header>
     <main>
-      <div class="page-heading">
-        <div><h1>路线编辑器</h1><p>在地图上选点，或告诉 AI 你想怎么骑。</p></div>
-      </div>
-
       <div class="workspace">
         <nav class="card roadbooks" aria-labelledby="roadbook-heading">
           <div class="card-top">
@@ -51,14 +47,18 @@
           <div id="live-map" class="live-map" hidden></div>
           <canvas id="demo-map" aria-label="示例路网。也可使用地点搜索选择点位。"></canvas>
           <div class="map-tools">
-            <form id="search-form" class="search-form" role="search">
-              <span data-icon="search"></span><input id="search-input" name="地点" placeholder="搜索地名或地点" aria-label="搜索地点" autocomplete="off"><button type="submit">搜索</button>
-            </form>
+            <div class="map-toolbar">
+              <form id="search-form" class="search-form" role="search">
+                <span data-icon="search"></span><input id="search-input" name="地点" placeholder="搜索地名或地点" aria-label="搜索地点" autocomplete="off"><button type="submit">搜索</button>
+              </form>
+              <button type="button" id="nationwide-map" class="map-overview" title="查看全国地图" hidden>全国</button>
+            </div>
             <div id="search-results" class="search-results" hidden></div>
           </div>
           <div class="map-controls">
-            <div class="zoom"><button type="button" id="zoom-in" aria-label="放大地图"><span data-icon="plus"></span></button><button type="button" id="zoom-out" aria-label="缩小地图"><span data-icon="minus"></span></button></div>
-            <button type="button" id="fit-map" aria-label="查看整条路线"><span data-icon="locate"></span></button>
+            <div class="zoom"><button type="button" id="zoom-in" aria-label="放大地图" disabled><span data-icon="plus"></span></button><button type="button" id="zoom-out" aria-label="缩小地图" disabled><span data-icon="minus"></span></button></div>
+            <button type="button" id="fit-map" aria-label="查看整条路线" title="查看整条路线" disabled><span data-icon="fit"></span></button>
+            <button type="button" id="locate-map" aria-label="定位到当前位置" title="定位到当前位置" disabled><span data-icon="locate"></span></button>
           </div>
           <div class="map-status"><span class="status-dot"></span><span id="map-message">正在加载地图</span></div>
           <span id="map-credit" class="map-credit">杭州示例路网</span>

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { getProvider, servicesConfigured, MapServiceError } from './lib/providers.mjs';
 import { buildRoute, demoGpx, normalizePoints, PlanningError } from './lib/planner.mjs';
 import { modelConfigured, ModelServiceError, runAgent } from './lib/agent.mjs';
+import { validPosition } from './lib/geo.mjs';
 
 const port = Number(process.env.PORT || 4319);
 const assets = new Map([
@@ -60,6 +61,12 @@ async function handle(req, res) {
   if (req.method === 'GET' && url.pathname === '/api/places') {
     const query = url.searchParams.get('q')?.trim().slice(0, 100);
     return json(res, 200, { places: query ? (await provider.find(query)).slice(0, 8) : [] });
+  }
+  if (req.method === 'POST' && url.pathname === '/api/location') {
+    if (provider.kind !== 'amap') return json(res, 503, { error: '高德地图未配置。' });
+    const { coords } = await readJson(req);
+    if (!validPosition(coords)) throw new PlanningError('定位坐标无效。');
+    return json(res, 200, { coords: await provider.convertGps(coords) });
   }
   if (req.method === 'POST' && url.pathname === '/api/route') {
     const body = await readJson(req);

@@ -8,9 +8,9 @@ button:disabled{opacity:.48;cursor:not-allowed}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #5572bb;outline-offset:3px}
 button,[data-icon]{display:inline-flex;align-items:center;justify-content:center}
 svg{width:19px;height:19px;flex:none}
-h1,h2,h3,p,dd,ol,dl{margin:0}
+h2,h3,p,dd,ol,dl{margin:0}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
-.shell{--work-height:clamp(500px,calc(100svh - 192px),920px);width:min(100% - 64px,1680px);margin:auto}
+.shell{--work-height:clamp(500px,calc(100svh - 109px),920px);width:min(100% - 64px,1680px);margin:auto}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);height:64px}
 .brand{display:flex;align-items:center;gap:11px;white-space:nowrap}
 .brand strong{font-size:21px;font-weight:830;letter-spacing:-.055em}
@@ -21,9 +21,6 @@ h1,h2,h3,p,dd,ol,dl{margin:0}
 .environment{display:flex;align-items:center;gap:7px;white-space:nowrap;color:#535956;font-size:13px;font-weight:680;background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 11px}
 .environment>span,.status-dot{width:7px;height:7px;border-radius:50%;background:#779a71;flex:none}
 main{padding:23px 0 22px}
-.page-heading{display:flex;justify-content:space-between;align-items:end;gap:16px;margin:0 0 18px}
-h1{font-size:clamp(30px,3vw,44px);font-weight:830;line-height:1.12;letter-spacing:-.055em}
-.page-heading p{margin-top:7px;color:var(--muted);font-size:14px}
 .button{min-height:43px;padding:0 15px;border:1px solid transparent;border-radius:999px;gap:7px;font-size:14px;font-weight:740;white-space:nowrap;transition:background .15s,border-color .15s}
 .button svg{width:17px;height:17px}
 .dark{background:var(--ink);color:#fff}
@@ -38,18 +35,22 @@ h1{font-size:clamp(30px,3vw,44px);font-weight:830;line-height:1.12;letter-spacin
 #demo-map{touch-action:pan-y}
 #demo-map.can-select{cursor:crosshair}
 .map-tools{position:absolute;top:17px;left:17px;width:min(337px,calc(100% - 34px));z-index:3}
-.search-form{display:flex;align-items:center;gap:8px;padding:6px 7px 6px 13px;background:rgba(255,255,255,.96);border:1px solid #e2e5de;border-radius:16px;box-shadow:0 6px 22px #20281016;color:#565d56}
+.map-toolbar{display:flex;gap:8px}
+.search-form{display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:6px 7px 6px 13px;background:rgba(255,255,255,.96);border:1px solid #e2e5de;border-radius:16px;box-shadow:0 6px 22px #20281016;color:#565d56}
 .search-form input{border:0;min-width:0;flex:1;background:transparent;padding:5px 0;color:var(--ink);font-size:15px}
 .search-form input:focus{outline:none}
 .search-form:focus-within{border-color:#69746a}
-.search-form button{min-height:32px;border:0;background:#f1f3ef;border-radius:10px;padding:0 10px;font-size:13px;font-weight:700}
+.search-form button{min-height:32px;border:0;background:#f1f3ef;border-radius:10px;padding:0 10px;font-size:13px;font-weight:700;white-space:nowrap}
+.map-overview{flex:none;min-width:50px;border:1px solid #e2e5de;border-radius:12px;background:var(--surface);box-shadow:0 2px 10px #20281017;font-size:13px;font-weight:700}
 .search-results{margin-top:6px;background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:5px;box-shadow:0 10px 24px #2028101a;max-height:300px;overflow:auto}
 .search-results button,.place-choice{display:flex;align-items:start;text-align:left;flex-direction:column;padding:9px 11px;gap:1px;width:100%;background:white;border:0;border-radius:10px}
 .search-results button:hover,.place-choice:hover{background:var(--bg)}
 .search-results p{font-size:14px;padding:10px}
 .search-results small,.place-choice small{color:var(--muted)}
-.map-controls{position:absolute;right:17px;bottom:45px;display:grid;gap:7px}
-.map-controls button{width:39px;height:39px;border:0;border-radius:12px;background:white;box-shadow:0 2px 10px #20281017}
+.map-controls{position:absolute;right:17px;bottom:45px;display:grid;gap:8px;z-index:2}
+.map-controls button{width:44px;height:44px;border:0;border-radius:12px;background:white;box-shadow:0 2px 10px #20281017}
+.map-controls button:hover:not(:disabled),.map-overview:hover{background:#f1f3ef}
+#locate-map{color:#2465d3}
 .map-controls .zoom{display:grid;background:white;border-radius:12px;box-shadow:0 2px 10px #20281017}
 .zoom button{box-shadow:none}
 .zoom button+button{border-top:1px solid var(--line);border-radius:0 0 12px 12px}
@@ -177,9 +178,6 @@ dialog::backdrop{background:#19191962}
   .shell{width:calc(100% - 24px)}
   .topbar{height:57px}
   main{padding-top:16px}
-  .page-heading{align-items:start;gap:6px;margin-bottom:12px}
-  .page-heading p{font-size:13px}
-  .page-heading .button{padding-inline:9px;font-size:12px}
   .workspace{grid-template-columns:minmax(0,1fr)}
   .roadbooks{max-height:240px}
   .map-card{height:47svh;min-height:295px;max-height:520px}
@@ -187,7 +185,7 @@ dialog::backdrop{background:#19191962}
   .agent-results{flex:auto;max-height:49svh}
   .map-tools{top:12px;left:12px;width:min(310px,calc(100% - 24px))}
   .map-controls{right:12px;bottom:39px}
-  .map-status{bottom:12px;left:12px;max-width:calc(100% - 44px)}
+  .map-status{bottom:12px;left:12px;max-width:calc(100% - 80px)}
   .map-credit{bottom:48px;left:12px;right:auto}
   .button,.editor-tabs button,.roadbook-actions button,.agent-target button{min-height:44px}
   .point-actions button{min-width:34px;min-height:43px}

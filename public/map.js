@@ -1,7 +1,12 @@
 import { demoBounds, demoPlaces, demoRoads } from './demo.js';
 
 const lookup = new Map(demoPlaces.map(place => [place.id, place]));
-const center = [120.132, 30.217];
+const demoCenter = [120.132, 30.217];
+const chinaCenter = [104.5, 34];
+const chinaBounds = [[73, 4], [136, 54]];
+const locationColor = '#2465d3';
+const inDemoBounds = ([lon, lat]) => lon >= demoBounds.west && lon <= demoBounds.east &&
+  lat >= demoBounds.south && lat <= demoBounds.north;
 const lake = [[120.139,30.262],[120.148,30.255],[120.151,30.247],[120.151,30.237],[120.144,30.233],[120.137,30.234],[120.130,30.241],[120.131,30.251],[120.136,30.256]];
 const river = [[119.95,30.155],[120.055,30.160],[120.096,30.160],[120.125,30.168],[120.145,30.184],[120.165,30.199],[120.193,30.204],[120.217,30.213],[120.233,30.230],[120.245,30.254],[120.284,30.259],[120.33,30.255]];
 const park = [[119.955,30.261],[119.998,30.274],[120.038,30.268],[120.074,30.254],[120.084,30.236],[120.116,30.224],[120.127,30.201],[120.119,30.178],[120.093,30.177],[120.056,30.193],[120.006,30.196],[119.952,30.179]];
@@ -57,7 +62,8 @@ export function offlineMap(canvas, onPick) {
   const ctx = canvas.getContext('2d');
   let state = { geometry: [], points: [], preview: false };
   let zoom = 1;
-  let focus = [...center];
+  let focus = [...demoCenter];
+  let userLocation = null;
   let pointer = null;
   const size = () => ({ w: canvas.clientWidth, h: canvas.clientHeight });
   const base = () => {
@@ -130,6 +136,16 @@ export function offlineMap(canvas, onPick) {
       ctx.fillStyle = 'white'; ctx.font = '700 10px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(index === 0 ? '起' : endpoint ? '终' : String(index), x, y + .5);
     });
+    if (userLocation) {
+      const [x, y] = project(userLocation);
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, Math.PI * 2);
+      ctx.fillStyle = locationColor;
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
   }
   const resize = new ResizeObserver(draw);
   resize.observe(canvas);
@@ -153,7 +169,7 @@ export function offlineMap(canvas, onPick) {
     if (pointer && !pointer.moved) {
       const rect = canvas.getBoundingClientRect();
       const point = unproject(event.clientX - rect.left, event.clientY - rect.top);
-      if (point[0] >= demoBounds.west && point[0] <= demoBounds.east && point[1] >= demoBounds.south && point[1] <= demoBounds.north) {
+      if (inDemoBounds(point)) {
         const nearest = demoPlaces.reduce((best, place) =>
           Math.hypot(place.coords[0] - point[0], place.coords[1] - point[1]) <
           Math.hypot(best.coords[0] - point[0], best.coords[1] - point[1]) ? place : best);
@@ -166,6 +182,17 @@ export function offlineMap(canvas, onPick) {
     render(next) { state = next; draw(); },
     zoom(delta) { zoom = Math.max(0.55, Math.min(4, zoom * (delta === 1 ? 1.28 : 0.78))); draw(); },
     centerOn(coords) { focus = [...coords]; draw(); },
+    showLocation(coords) {
+      if (!inDemoBounds(coords)) {
+        userLocation = null;
+        draw();
+        throw new Error('当前位置在杭州演示地图范围外。');
+      }
+      userLocation = coords;
+      focus = [...coords];
+      zoom = Math.max(zoom, 1.5);
+      draw();
+    },
     select(active) { canvas.classList.toggle('can-select', active); },
     fit() {
       const points = state.geometry.length ? state.geometry : state.points.map(point => point.coords);
@@ -193,8 +220,13 @@ export async function liveMap(element, key, onPick) {
     script.onerror = () => { clearTimeout(timeout); reject(new Error('高德底图加载失败。')); };
     document.head.append(script);
   });
-  const map = new sdk.Map(element, { viewMode: '2D', zoom: 12, center, mapStyle: 'amap://styles/normal', resizeEnable: true });
+  const map = new sdk.Map(element, {
+    viewMode: '2D', zoom: 4, center: chinaCenter, mapStyle: 'amap://styles/normal', resizeEnable: true,
+  });
+  const showNationwide = () => map.setBounds(new sdk.Bounds(...chinaBounds), true, [16, 16, 16, 16]);
+  showNationwide();
   let overlays = [];
+  let locationMarker = null;
   map.on('click', event => onPick({
     id: `map-${event.lnglat.lng.toFixed(6)}-${event.lnglat.lat.toFixed(6)}`,
     name: '地图选点', coords: [event.lnglat.lng, event.lnglat.lat],
@@ -203,7 +235,19 @@ export async function liveMap(element, key, onPick) {
     select(active) { map.setDefaultCursor(active ? 'crosshair' : 'grab'); },
     zoom(delta) { map.setZoom(map.getZoom() + delta); },
     centerOn(coords) { map.setZoomAndCenter(15, coords, true); },
-    fit() { if (overlays.length) map.setFitView(overlays, false, [65,70,65,70], 16); },
+    showNationwide,
+    showLocation(coords) {
+      if (locationMarker) map.remove(locationMarker);
+      locationMarker = new sdk.CircleMarker({
+        center: coords, radius: 8, fillColor: locationColor, fillOpacity: 1,
+        strokeColor: '#fff', strokeWeight: 3, strokeOpacity: 1, zIndex: 200, bubble: true,
+      });
+      map.add(locationMarker);
+      map.setZoomAndCenter(Math.max(15, map.getZoom()), coords, true);
+    },
+    fit() {
+      if (overlays.length) map.setFitView(overlays, false, [65,70,65,70], 16);
+    },
     render({ geometry, points, preview }) {
       if (overlays.length) map.remove(overlays);
       overlays = points.map(point => new sdk.Marker({ position: point.coords, title: point.name }));

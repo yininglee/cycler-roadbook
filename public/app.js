@@ -5,6 +5,7 @@ const icons = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   minus: '<path d="M5 12h14"/>',
   search: '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4 4"/>',
+  fit: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/>',
   locate: '<circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3"/>',
   book: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 3v18m3-13h5m-5 4h5"/>',
   repeat: '<path d="m17 2 4 4-4 4M3 11V8a2 2 0 0 1 2-2h16M7 22l-4-4 4-4m14-1v3a2 2 0 0 1-2 2H3"/>',
@@ -298,6 +299,7 @@ function renderRoute() {
     pointList.append(row);
   });
   state.map?.render({ geometry: route?.geometry ?? [], points, preview: Boolean(candidate), loop });
+  $('fit-map').disabled = !state.map || !points.length;
   state.map?.select(Boolean(state.roadbook) && !candidate && (state.choosing || points.length < 2));
   const message = !state.roadbook ? '选择或新建路线后可在地图上选点' :
     state.choosing ? (state.editIndex === null ? '在地图上选点，或搜索地点' : '请选择点位的新位置') :
@@ -750,6 +752,40 @@ $('prompts').querySelectorAll('[data-prompt]').forEach(button => button.addEvent
 $('zoom-in').addEventListener('click', () => state.map?.zoom(1));
 $('zoom-out').addEventListener('click', () => state.map?.zoom(-1));
 $('fit-map').addEventListener('click', () => state.map?.fit());
+$('nationwide-map').addEventListener('click', () => state.map?.showNationwide());
+
+async function locate() {
+  if (!state.map) return;
+  if (!window.isSecureContext) return toast('请通过 HTTPS 或本机地址打开页面后定位。');
+  if (!navigator.geolocation) return toast('当前浏览器不支持定位。');
+
+  const button = $('locate-map');
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  toast('正在获取当前位置…');
+  try {
+    const position = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true, timeout: 12000,
+      });
+    });
+    const gps = [position.coords.longitude, position.coords.latitude];
+    const { coords } = state.config.mode === 'amap' ? await api('/api/location', { coords: gps }) : { coords: gps };
+    state.map.showLocation(coords);
+    toast('已定位到当前位置。');
+  } catch (error) {
+    const message = {
+      1: '请在浏览器和系统设置中允许访问位置信息。',
+      2: '暂时无法获取当前位置，请检查设备定位设置。',
+      3: '定位超时，请重试。',
+    }[error.code];
+    toast(message || error.message || '定位失败，请重试。');
+  } finally {
+    button.disabled = false;
+    button.removeAttribute('aria-busy');
+  }
+}
+$('locate-map').addEventListener('click', locate);
 
 async function initialize() {
   try {
@@ -767,7 +803,10 @@ async function initialize() {
       state.map = offlineMap($('demo-map'), pickPoint);
     } else {
       state.map = await liveMap($('live-map'), state.config.mapKey, pickPoint);
+      $('nationwide-map').hidden = false;
+      $('search-input').placeholder = '搜索全国地名或地点';
     }
+    for (const id of ['zoom-in', 'zoom-out', 'locate-map']) $(id).disabled = false;
     renderRoute(); state.map.fit();
   } catch (error) {
     $('environment').lastChild.textContent = '地图未连接';
