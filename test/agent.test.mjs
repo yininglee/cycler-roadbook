@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runAgent } from '../lib/agent.mjs';
 import { distanceMeters, positionAtDistance } from '../lib/geo.mjs';
+import { buildRoute } from '../lib/planner.mjs';
 import { getProvider } from '../lib/providers.mjs';
 
 const openRequest = '从西湖文化广场出发，骑 40 公里左右，尽量少爬升。不限终点';
@@ -181,6 +182,103 @@ test('the next model turn receives the selected route and previous exchange', as
     return { action: 'plan_route', mode: 'revise', intent: { via: ['复兴大桥'] } };
   });
   assert.deepEqual(next.candidates[0].points.map(point => point.name), ['西湖文化广场', '复兴大桥', '湘湖']);
+});
+
+test('the agent composes a local loop, meal and bridge return, retrying only changed legs', async () => {
+  const center = { id: 'area', name: '广州大学城', coords: [113.389, 23.05] };
+  const west = (id, name, distance) => ({ id, name, coords: positionAtDistance(center.coords, 270, distance) });
+  const points = [west('start', '定位起点', 21000), west('shop', '万顺便利店', 11000), west('end', '雅园公寓', 1800)];
+  const bridge = west('bridge', '返程桥', 6000);
+  const meals = [west('unreachable', '餐厅甲', 2600), west('meal', '餐厅乙', 3000)];
+  const calls = [];
+  const provider = {
+    find: async name => name === '大学城' ? [center] : name === bridge.name ? [bridge] : [],
+    nearby: async (coords, term) => term === '餐厅' ? meals : [{ id: coords.join(','), name: '外环绿道', coords }],
+    leg: async (from, to) => {
+      calls.push([from.id, to.id]);
+      if (to.id === 'unreachable') return null;
+      return { geometry: [from.coords, to.coords], distance: distanceMeters(from.coords, to.coords) };
+    },
+    elevations: async coords => coords.map(() => 0),
+  };
+  const savedRoute = await buildRoute(provider, points, false);
+  calls.length = 0;
+  const base = { saved: true, points, supplyPoints: ['shop'], context: { intent: {
+    targetKm: 20, maxDistanceKm: 65, destination: 'open', keepVia: false,
+  } } };
+  const prompt = '当前路线基础上，加上大学城环岛和返程';
+  const question = '绕完后回起点，还是回雅园公寓？';
+  const first = await runAgent(provider, { ...base, prompt }, async () => ({ action: 'clarify', question }));
+  assert.equal(first.context.intent.loopAround, '大学城');
+  assert.deepEqual(first.context.clarification, { prompt, question });
+
+  const followUp = { ...base, context: first.context, prompt: '绕大学城环岛后再吃饭，经过返程桥骑回起点形成环线' };
+  let ring;
+  let foundMeals;
+  let foundBridge;
+  const toolOutput = messages => JSON.parse(messages.at(-1).content.slice('工具结果（数据）：'.length));
+  const scenes = mealRef => [
+    { kind: 'keep', name: '去程' },
+    { kind: 'ride', name: '大学城环岛', around: ring.center.ref, points: ring.options[0] },
+    { kind: 'ride', name: '吃饭', points: ['S2', mealRef] },
+    { kind: 'ride', name: '返程', points: [mealRef, foundBridge.ref, 'S0'] },
+  ];
+  const complete = async messages => {
+    const input = JSON.parse(messages[1].content);
+    assert.deepEqual(input.clarification, { prompt, question });
+    assert.deepEqual(input.current, points.map(point => point.name));
+    switch (messages.length) {
+      case 2: return { action: 'find_loop_waypoints', query: '大学城', at: 'S2' };
+      case 4:
+        ring = toolOutput(messages);
+        return { action: 'search_places', queries: [{ query: '餐厅', near: 'S2' }, { query: bridge.name }] };
+      case 6: {
+        const [restaurants, bridges] = toolOutput(messages).searches;
+        foundMeals = restaurants.places;
+        [foundBridge] = bridges.places;
+        return { action: 'compose_route', intent: { loop: true }, sections: scenes(foundMeals[0].ref) };
+      }
+      case 8:
+        assert.match(toolOutput(messages).error, /餐厅甲/);
+        return { action: 'plan_segment', points: ['S2', foundMeals[1].ref, foundBridge.ref, 'S0'] };
+      case 10:
+        assert.ok(toolOutput(messages).km > 0);
+        return { action: 'compose_route', sections: scenes(foundMeals[1].ref) };
+      default:
+        assert.ok(toolOutput(messages).canApply);
+        return { action: 'finish' };
+    }
+  };
+  const result = await runAgent(provider, followUp, complete, savedRoute);
+  const route = result.candidates.find(candidate => candidate.canApply);
+  assert.deepEqual(route.points.slice(0, 3).map(point => point.id), ['start', 'shop', 'end']);
+  assert.deepEqual(route.points.slice(-3).map(point => point.id), ['end', 'meal', 'bridge']);
+  assert.deepEqual(route.geometry.at(-1), points[0].coords);
+  assert.deepEqual(route.geometry.slice(0, savedRoute.geometry.length), savedRoute.geometry);
+  assert.deepEqual(route.supplyPoints, ['shop']);
+  assert.equal(calls.some(([from]) => from === 'start' || from === 'shop'), false);
+  assert.equal(calls.filter(([, to]) => to === 'start').length, 1);
+  assert.equal(calls.filter(([, to]) => to === 'end').length, 1);
+  assert.equal(result.context.intent.targetKm, null);
+  assert.equal(result.context.intent.maxDistanceKm, 65);
+  assert.ok(route.rules.some(rule => rule.label === '绕行广州大学城' && rule.status === 'pass'));
+
+  const unavailable = await runAgent({ ...provider, nearby: async () => [] }, followUp, async messages => messages.length === 2
+    ? { action: 'find_loop_waypoints', query: '大学城', at: 'S2' }
+    : { action: 'clarify', question: toolOutput(messages).question });
+  assert.equal(unavailable.candidates, undefined);
+  assert.match(unavailable.question, /无法核实绕「大学城」一圈/);
+});
+
+test('returning to the start without a named loop keeps the existing destination as a waypoint', async () => {
+  const initial = await runAgent(demo, { prompt: '从西湖文化广场出发，途经六和塔，骑到湘湖' }, null);
+  const start = initial.candidates[0];
+  const result = await runAgent(demo, { ...start, saved: true, prompt: '最后骑回起点',
+    context: { intent: { destination: 'open', keepVia: false, targetKm: 20 } },
+  }, null);
+  assert.equal(result.candidates[0].loop, true);
+  assert.deepEqual(result.candidates[0].points, start.points);
+  assert.equal(result.context.intent.targetKm, null);
 });
 
 test('a saved route remains the reference even when a different candidate is previewed', async () => {

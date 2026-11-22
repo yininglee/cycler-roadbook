@@ -160,7 +160,7 @@ function persistRoadbooks() {
       const { id, saved } = book;
       if (!saved) return { id, name: book.name, points: [], loop: false, autoName: book.autoName };
       const { name, points, loop, appliedContext, supplyPoints } = saved;
-      return { id, name, points, loop, appliedContext, supplyPoints };
+      return { id, name, points, loop, appliedContext, supplyPoints, trackId: saved.route?.trackId ?? saved.trackId };
     });
     localStorage.setItem(roadbookKey(), JSON.stringify({ books, selected: state.roadbook?.id ?? null }));
     return true;
@@ -413,7 +413,8 @@ async function calculateRoute() {
   let result;
   let routeError = '';
   try {
-    result = await api('/api/route', { points: state.points, loop: state.loop });
+    result = await api('/api/route', { points: state.points, loop: state.loop,
+      trackId: state.dirty ? undefined : book.saved?.trackId });
   } catch (error) {
     routeError = error.message;
   }
@@ -425,6 +426,8 @@ async function calculateRoute() {
   if (result) {
     if (book.saved && !editor.dirty) {
       book.saved.route = { ...result, supplyPoints: book.saved.supplyPoints };
+      book.saved.trackId = result.trackId;
+      persistRoadbooks();
     }
     editor.active = book.saved && !editor.dirty ? book.saved.route : result;
   }
@@ -458,7 +461,7 @@ function placeButton(place, handler) {
   return button;
 }
 function conversationBase(query) {
-  const latest = state.turns.at(-1);
+  const latest = state.turns.findLast(turn => turn.revision === state.revision && !turn.failed);
   const saved = state.roadbook?.saved;
   const route = saved ?? state;
   const measuredRoute = saved ? saved.route : selectedRoute();
@@ -468,7 +471,7 @@ function conversationBase(query) {
   const usesLocation = /当前位置|当前定位|所在位置/.test(query) || /当前位置|当前定位|所在位置/.test(context?.intent?.start ?? '');
   return {
     points: route.points, loop: route.loop,
-    distance: measuredRoute?.distance, supplyPoints: measuredRoute?.supplyPoints ?? saved?.supplyPoints,
+    distance: measuredRoute?.distance, supplyPoints: measuredRoute?.supplyPoints ?? saved?.supplyPoints, trackId: measuredRoute?.trackId,
     saved: Boolean(saved), context,
     selections: pendingTurn?.base.selections ?? {},
     location: usesLocation && state.config.mode === 'amap' ? state.location ?? undefined : undefined,
@@ -504,7 +507,7 @@ function saveCandidate(turn, index) {
     const open = intent.destination === 'open' && !candidate.loop;
     const via = candidate.points.slice(1, candidate.loop ? undefined : -1);
     state.appliedContext = { intent: {
-      ...intent, start: '', end: '', keepVia: !open,
+      ...intent, start: '', end: '', loopAround: '', keepVia: !open,
       via: open ? (via.some(point => point.visit) ? via.map(point => point.name) : intent.via) : [],
     } };
     state.context = state.appliedContext;

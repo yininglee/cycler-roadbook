@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { getProvider, servicesConfigured, MapServiceError } from './lib/providers.mjs';
 import { configuredElevationSource } from './lib/elevation.mjs';
@@ -8,6 +9,7 @@ import { modelConfigured, ModelServiceError, runAgent } from './lib/agent.mjs';
 import { validPosition } from './lib/geo.mjs';
 
 const port = Number(process.env.PORT || 4319);
+const tracks = new Map();
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
@@ -19,6 +21,24 @@ const json = (res, status, data) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(data));
 };
+
+function cacheTrack(route) {
+  const trackId = route.trackId ?? randomUUID();
+  const track = { ...route, trackId };
+  tracks.delete(trackId);
+  tracks.set(trackId, track);
+  if (tracks.size > 32) tracks.delete(tracks.keys().next().value);
+  return track;
+}
+
+function readTrack(body) {
+  const route = tracks.get(body.trackId);
+  if (!route || route.loop !== (body.loop === true) || !Array.isArray(body.points) ||
+      JSON.stringify(route.points) !== JSON.stringify(normalizePoints(body.points))) return null;
+  tracks.delete(body.trackId);
+  tracks.set(body.trackId, route);
+  return route;
+}
 
 async function readJson(req) {
   req.setEncoding('utf8');
@@ -74,10 +94,13 @@ async function handle(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/api/route') {
     const body = await readJson(req);
-    return json(res, 200, await buildRoute(provider, body.points, body.loop === true));
+    return json(res, 200, cacheTrack(readTrack(body) ?? await buildRoute(provider, body.points, body.loop === true)));
   }
   if (req.method === 'POST' && url.pathname === '/api/plan') {
-    return json(res, 200, await runAgent(provider, await readJson(req)));
+    const body = await readJson(req);
+    const result = await runAgent(provider, body, undefined, body.saved === true ? readTrack(body) : null);
+    if (result.candidates) result.candidates = result.candidates.map(cacheTrack);
+    return json(res, 200, result);
   }
   if (req.method === 'POST' && url.pathname === '/api/export/preview') {
     if (provider.kind !== 'amap') return json(res, 409, { error: '演示路线可直接下载 GPX。' });
