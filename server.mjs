@@ -15,6 +15,7 @@ const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/location-intent.js', ['location-intent.js', 'text/javascript; charset=utf-8']],
   ['/map.js', ['map.js', 'text/javascript; charset=utf-8']],
   ['/demo.js', ['demo.js', 'text/javascript; charset=utf-8']],
 ]);

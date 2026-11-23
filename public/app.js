@@ -1,4 +1,5 @@
 import { offlineMap, liveMap } from './map.js';
+import { isCurrentLocation, isLocationReply, mentionsCurrentLocation } from './location-intent.js';
 
 const icons = {
   bike: '<circle cx="5" cy="17" r="3.5"/><circle cx="19" cy="17" r="3.5"/><path d="m5 17 4-7 4 7H5m8 0 3-9-1-2h3M8 10h5"/>',
@@ -633,7 +634,7 @@ function placeButton(place, handler) {
   if (place.address) button.append(item('small', '', place.address));
   return button;
 }
-function conversationBase(query) {
+function conversationBase() {
   const saved = state.roadbook?.saved;
   const candidate = previewRoute();
   const target = conversationTarget();
@@ -645,14 +646,12 @@ function conversationBase(query) {
   const pendingTurn = latest?.result?.context && !latest.result.candidates?.length ? latest : null;
   const context = pendingTurn?.result.context ?? (candidate ? candidateContext(state.preview.turn, previewCandidate(), candidate) :
     saved ? saved.appliedContext : state.context);
-  const usesLocation = /当前位置|当前定位|所在位置/.test(query) || /当前位置|当前定位|所在位置/.test(context?.intent?.start ?? '');
   return {
     points: route.points, loop: route.loop,
     distance: measuredRoute?.distance, supplyPoints: measuredRoute?.supplyPoints ?? saved?.supplyPoints, trackId: measuredRoute?.trackId,
     saved: Boolean(saved && !candidate), target: candidate ? 'preview' : saved ? 'saved' : 'draft', context,
     ...(index === null ? {} : { selectedPoint: { index, id: route.points[index].id } }),
     selections: pendingTurn?.base.selections ?? {},
-    location: usesLocation && state.config.mode === 'amap' ? state.location ?? undefined : undefined,
   };
 }
 
@@ -1017,7 +1016,12 @@ async function runPlan(query, continuation = null) {
   if (!book || state.pending || state.previousView || state.planning) return;
   const targetRoute = conversationTarget();
   if (continuation && !canContinueTurn(continuation)) return;
-  const base = continuation?.base ?? conversationBase(query);
+  const requestBase = continuation?.base ?? conversationBase();
+  const waitingFor = requestBase.context?.waitingFor;
+  const needsStart = waitingFor === 'start' || !waitingFor && !requestBase.points.length;
+  const usesLocation = mentionsCurrentLocation(query) || needsStart && isLocationReply(query) ||
+    isCurrentLocation(requestBase.context?.intent?.start);
+  const base = { ...requestBase, location: usesLocation && state.config.mode === 'amap' ? state.location ?? undefined : undefined };
   const history = state.turns.slice(-6).map(turn => ({
     prompt: turn.prompt, reply: turn.result?.question,
     candidates: turn.result?.candidates?.map(route => destinationOf(route)),

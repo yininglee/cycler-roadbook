@@ -61,6 +61,44 @@ test('current-location prompts route from the supplied coordinates without looki
   assert.deepEqual(named.candidates[0].points[0], selected);
 });
 
+test('short replies use the map location when the agent is waiting for a start', async () => {
+  const location = [120.16, 30.28];
+  const destination = { id: 'park', name: '终点公园', coords: positionAtDistance(location, 90, 17000) };
+  const provider = {
+    kind: 'test',
+    find: async name => assert.fail(`Unexpected place lookup: ${name}`),
+    nearby: async () => [destination],
+    leg: async (from, to) => ({ geometry: [from.coords, to.coords], distance: 20000 }),
+    elevations: async () => null,
+  };
+  const first = await runAgent(provider, { prompt: '骑 20 公里左右，终点不限' }, async () => ({
+    action: 'plan_route', mode: 'new', intent: { destination: 'open', targetKm: 20 }, searchTerms: ['公园'],
+  }));
+  assert.equal(first.context.waitingFor, 'start');
+  const missing = await runAgent(provider, { prompt: '附近', context: first.context }, () => assert.fail('Expected a location prompt'));
+  assert.equal(missing.context.waitingFor, 'start');
+  assert.equal(missing.context.intent.start, '当前位置');
+  assert.match(missing.question, /请先在地图上定位/);
+  for (const [prompt, context] of [['附近', first.context], ['已经定位了', missing.context]]) {
+    const result = await runAgent(provider, { prompt, context, location }, () => assert.fail('Expected to resume planning'));
+    assert.equal(result.context.intent.targetKm, 20);
+    assert.equal(result.context.intent.destination, 'open');
+    assert.deepEqual(result.context.searchTerms, ['公园']);
+    assert.deepEqual(result.candidates[0].points[0].coords, location);
+  }
+  const clarification = { ...first.context, waitingFor: undefined,
+    clarification: { prompt: '我想骑山路，爬坡', question: '想从哪里出发？' } };
+  const resumed = await runAgent(provider, { prompt: '已经定位了', context: clarification, location }, async messages => {
+    if (messages.length > 2) return { action: 'finish' };
+    const input = JSON.parse(messages[1].content);
+    assert.equal(input.locationReply, true);
+    assert.equal(input.locationAvailable, true);
+    return { action: 'plan_route', mode: 'new' };
+  });
+  assert.equal(resumed.context.intent.targetKm, 20);
+  assert.deepEqual(resumed.candidates[0].points[0].coords, location);
+});
+
 test('the route tool returns measured feedback and tries wider search without changing constraints', async () => {
   const home = { id: 'home', name: '起点公园', coords: [120, 30] };
   const short = { id: 'short', name: '近处公园', coords: positionAtDistance(home.coords, 0, 16000) };
