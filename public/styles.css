@@ -177,7 +177,8 @@ h2{font-size:21px;font-weight:810;letter-spacing:-.036em;line-height:1.25;overfl
 .agent-form svg{width:17px;height:17px}
 .agent-results{position:relative;flex:1;min-height:0;border-bottom:1px solid var(--line);padding:8px 4px 10px 0;overflow:auto;scrollbar-width:thin;overscroll-behavior:contain}
 .agent-turn{display:grid;gap:8px;font-size:14px;color:#4d5451;overflow-wrap:anywhere}
-.agent-turn+.agent-turn{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+.agent-results>.candidate+.agent-turn,.agent-turn+.agent-turn{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+.agent-results>.candidate{overflow-wrap:anywhere}
 .agent-request{justify-self:end;max-width:90%;border-radius:14px 14px 4px 14px;background:#f1f2f3;color:var(--ink);padding:7px 11px;white-space:pre-wrap}
 .agent-reply{padding:2px 1px}
 .agent-target{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;padding:4px 8px;border-radius:10px;background:var(--sport-soft);color:var(--sport);font-size:13px;font-weight:650;overflow-wrap:anywhere}

@@ -76,9 +76,10 @@ async function request(path, input) {
 const api = async (...args) => (await request(...args)).json();
 const asKm = distance => (distance / 1000).toFixed(1);
 const routeFrom = route => ({ points: route.points, loop: route.loop, distance: route.distance, supplyPoints: route.supplyPoints });
-const originalPreview = () => state.preview?.turn.result.candidates[state.preview.index];
-const previewHistory = () => state.roadbook?.previewEdits?.get(originalPreview());
-const previewRoute = () => previewHistory()?.current.route ?? originalPreview();
+const previewCandidate = () => state.preview?.turn.candidates[state.preview.index];
+const workingCandidate = entry => state.roadbook?.previewEdits?.get(entry)?.current;
+const previewHistory = () => state.roadbook?.previewEdits?.get(previewCandidate());
+const previewRoute = () => previewHistory()?.current.route ?? previewCandidate()?.route;
 const conversationTarget = () => previewRoute() ?? state.roadbook?.saved ?? state.points;
 const editorPoints = () => previewRoute()?.points ?? (state.panel === 'ai' ? state.roadbook?.saved?.points : null) ?? state.points;
 const selectedIndexFor = points => state.selection?.points === points ? state.selection.index : null;
@@ -89,10 +90,14 @@ const pointInteractions = () => Boolean(state.roadbook && !state.previousView &&
 const verificationIssues = route => (route?.rules ?? []).filter(rule => rule.hard && (rule.status === 'fail' || rule.status === 'unknown'));
 const verificationStatus = rule => rule.status === 'fail' ? '未通过' : '待核实';
 const verificationReason = rule => `${rule.label} · ${verificationStatus(rule)}（${rule.detail}）`;
-const candidateSaveLabel = (candidate, saved, fallback) => verificationIssues(candidate).length ? '核实后保存' :
-  saved ? '替换已保存路线' : fallback;
-const canReviewCandidate = candidate => candidate.geometry?.length > 1 &&
-  (candidate.canApply || verificationIssues(candidate).length > 0);
+const sameTrack = (first, second) => Boolean(first && second &&
+  (first === second || first.trackId && first.trackId === second.trackId));
+const savedVersionOf = (entry, route) => sameTrack(entry?.savedVersion?.route, route) ? entry.savedVersion : null;
+const candidateSaveLabel = (entry, candidate, saved, fallback) =>
+  !savedVersionOf(entry, candidate)?.verification?.length && verificationIssues(candidate).length ? '核实后保存' :
+    saved ? '替换已保存路线' : fallback;
+const canReviewCandidate = (entry, candidate) => candidate.geometry?.length > 1 &&
+  (savedVersionOf(entry, candidate) || candidate.canApply || verificationIssues(candidate).length > 0);
 const currentDiagnostic = () => {
   const manual = previewHistory()?.current;
   if (manual?.issues.length) return { target: manual.route, issues: manual.issues };
@@ -154,6 +159,7 @@ function currentExportReview(book = state.roadbook) {
   return review && review.saved === book.saved ? review : null;
 }
 const destinationOf = route => route.loop ? route.points[0].name : route.points.at(-1).name;
+const routeEndpoints = route => [route.points[0].name, route.loop ? '返回起点' : destinationOf(route)].join(' → ');
 const pointLabel = point => point.visit === 'checkpoint' ? point.name + '（签到点）' : point.name;
 let toastTimer;
 function toast(message) {
@@ -182,7 +188,7 @@ function renderRoadbooks() {
     const { name, loop, points } = book.saved ?? (current ? state : book);
     const row = item('li', current ? 'roadbook current' : 'roadbook');
     const select = action('', 'roadbook-select', () => {
-      openRoadbook(current ? null : book);
+      openRoadbook(current ? null : book, book.saved ? 'ai' : undefined);
       persistRoadbooks();
       list.children[state.roadbooks.indexOf(book)]?.firstElementChild.focus({ preventScroll: true });
     });
@@ -257,6 +263,7 @@ function commitRoadbook(verification) {
   cacheEditor();
   const { name, points, loop, active, appliedContext } = book;
   book.saved = { name, points, loop, route: active, appliedContext, supplyPoints: active.supplyPoints, verification };
+  initializeOriginalCandidate(book);
   book.exportReview = null;
   renderRoadbooks();
   toast(persistRoadbooks() ? '路书已保存。' : '已保存到当前页面。浏览器存储不可用。');
@@ -271,7 +278,7 @@ function loadRoadbooks() {
   openRoadbook(state.roadbooks.find(book => book.id === saved?.selected) ?? null);
 }
 
-function openRoadbook(book) {
+function openRoadbook(book, panel = book?.panel ?? 'ai') {
   cacheEditor();
   if (state.roadbook && state.roadbook !== book) state.roadbook.exportReview = null;
   state.searchRequest++;
@@ -283,14 +290,16 @@ function openRoadbook(book) {
     pending: book?.pending ?? needsRoute,
     turns: book?.turns ?? [], context: book?.context ?? book?.appliedContext ?? null, appliedContext: book?.appliedContext ?? null,
     editIndex: null, choosing: false, selection: null, previousView: book?.previousView ?? false,
-    planning: book?.planning ?? false, preview: book?.preview ?? null, panel: book?.panel ?? 'ai',
+    planning: book?.planning ?? false, preview: book?.preview ?? null, panel,
   });
   $('search-results').hidden = true;
   $('search-input').value = '';
   $('agent-input').value = book?.input ?? '';
   $('route-editor').hidden = !book;
+  initializeOriginalCandidate(book);
   renderEditorTabs();
-  renderRoadbooks(); renderPlan(true); renderRoute();
+  renderRoadbooks(); renderPlan(); renderRoute();
+  $('agent-results').scrollTop = 0;
   if (needsRoute) calculateRoute();
   else state.map?.fit();
 }
@@ -382,8 +391,9 @@ function renderRoute() {
   $('add-point').hidden = Boolean(candidate);
   $('add-point').disabled = !state.config || state.points.length >= 12 || readOnly;
   $('add-point').classList.toggle('active', state.choosing && state.editIndex === null);
-  $('save-roadbook').textContent = candidate ? candidateSaveLabel(candidate, state.roadbook?.saved, '保存路书') : '保存路书';
-  $('save-roadbook').disabled = candidate ? !canReviewCandidate(candidate) || candidate === state.roadbook?.saved?.route || !pointInteractions() || Boolean(diagnostic) :
+  $('save-roadbook').textContent = candidate ? candidateSaveLabel(previewCandidate(), candidate, state.roadbook?.saved, '保存路书') : '保存路书';
+  $('save-roadbook').disabled = candidate ? !canReviewCandidate(previewCandidate(), candidate) ||
+    sameTrack(candidate, state.roadbook?.saved?.route) || !pointInteractions() || Boolean(diagnostic) :
     !current || readOnly || !state.dirty || state.planning;
   renderRoadbookDetails();
   const note = $('route-note');
@@ -475,6 +485,7 @@ function cancelPlanning() {
     turn.result = { question: '草稿已更新，本轮规划已结束。' };
   }
   state.planning = false;
+  resetOriginalPreview(state.roadbook, state.preview);
   state.preview = null;
   state.selection = null;
 }
@@ -588,6 +599,7 @@ async function calculateRoute() {
     if (book.saved && !editor.dirty) {
       book.saved.route = { ...result, supplyPoints: book.saved.supplyPoints };
       book.saved.trackId = result.trackId;
+      initializeOriginalCandidate(book);
       persistRoadbooks();
     }
     editor.active = book.saved && !editor.dirty ? book.saved.route : result;
@@ -631,7 +643,8 @@ function conversationBase(query) {
     (turn.base?.selectedPoint?.index ?? null) === index);
   const measuredRoute = candidate ?? (saved ? saved.route : selectedRoute());
   const pendingTurn = latest?.result?.context && !latest.result.candidates?.length ? latest : null;
-  const context = pendingTurn?.result.context ?? (candidate ? candidateContext(state.preview.turn, candidate) : saved ? saved.appliedContext : state.context);
+  const context = pendingTurn?.result.context ?? (candidate ? candidateContext(state.preview.turn, previewCandidate(), candidate) :
+    saved ? saved.appliedContext : state.context);
   const usesLocation = /当前位置|当前定位|所在位置/.test(query) || /当前位置|当前定位|所在位置/.test(context?.intent?.start ?? '');
   return {
     points: route.points, loop: route.loop,
@@ -643,8 +656,10 @@ function conversationBase(query) {
   };
 }
 
-function candidateContext(turn, candidate) {
-  const intent = turn.result.context?.intent;
+function candidateContext(turn, entry, candidate) {
+  const savedVersion = savedVersionOf(entry, candidate);
+  if (savedVersion) return savedVersion.appliedContext;
+  const intent = entry.savedVersion?.appliedContext?.intent ?? turn.result?.context?.intent;
   const open = intent?.destination === 'open' && !candidate.loop;
   const via = candidate.points.slice(1, candidate.loop ? undefined : -1);
   return { intent: {
@@ -655,11 +670,11 @@ function candidateContext(turn, candidate) {
 
 async function revisePreviewPoint(index, replacement) {
   const original = state.preview;
-  const source = originalPreview();
+  const entry = previewCandidate();
   const candidate = previewRoute();
   const book = state.roadbook;
   if (!candidate?.points[index] || !pointInteractions()) return;
-  const context = candidateContext(original.turn, candidate);
+  const context = candidateContext(original.turn, entry, candidate);
   const previous = previewHistory()?.current ?? { route: candidate, issues: [], index: selectedIndexFor(candidate.points) };
   const request = Symbol();
   book.previewRequest = request;
@@ -676,7 +691,7 @@ async function revisePreviewPoint(index, replacement) {
   let error;
   try {
     updated = await api('/api/route', { previewEdit: {
-      base: { ...routeFrom(candidate), trackId: candidate.trackId }, index, replacement, intent: context.intent,
+      base: { ...routeFrom(candidate), trackId: candidate.trackId }, index, replacement, intent: context?.intent,
     } });
   } catch (failure) { error = failure; }
   if (book.previewRequest !== request) return;
@@ -685,10 +700,10 @@ async function revisePreviewPoint(index, replacement) {
   editor.pending = false;
   if (editor.preview === original && (updated || error?.issues?.length)) {
     const edits = book.previewEdits ??= new WeakMap();
-    const history = edits.get(source) ?? { undo: [], redo: [] };
+    const history = edits.get(entry) ?? { undo: [], redo: [] };
     recordEdit(history, previous);
     history.current = { route: updated ?? candidate, issues: error?.issues ?? [], index: replacement ? index : null };
-    edits.set(source, history);
+    edits.set(entry, history);
     if (editor === state) state.selection = replacement ? { points: history.current.route.points, index } : null;
   }
   if (editor === state) {
@@ -698,8 +713,13 @@ async function revisePreviewPoint(index, replacement) {
   }
 }
 
+function resetOriginalPreview(book, preview) {
+  if (preview?.index === 0 && preview.turn === book?.originalTurn) book.previewEdits?.delete(preview.turn.candidates[0]);
+}
+
 function showPreview(turn, index) {
   if (state.roadbook) state.roadbook.exportReview = null;
+  resetOriginalPreview(state.roadbook, state.preview);
   state.preview = index === null ? null : { turn, index };
   state.selection = null;
   state.choosing = false;
@@ -709,19 +729,50 @@ function showPreview(turn, index) {
   renderPlan(); renderRoute(); state.map?.fit();
 }
 
+function initializeOriginalCandidate(book) {
+  const savedVersion = book?.saved;
+  const route = savedVersion?.route;
+  if (!book?.originalTurn && route?.geometry?.length) {
+    book.originalTurn = { candidates: [{ route, savedVersion, title: '原路线' }] };
+  }
+}
+
+function retainSavedCandidate(book, turn) {
+  const savedVersion = book.saved;
+  const route = savedVersion?.route;
+  if (!route?.geometry?.length) return;
+  initializeOriginalCandidate(book);
+  const entries = [...book.originalTurn.candidates, ...state.turns.flatMap(item => item.candidates ?? [])];
+  const existing = entries.find(entry => {
+    const working = workingCandidate(entry);
+    return !working?.issues.length && sameTrack(working?.route ?? entry.route, route);
+  });
+  if (existing) existing.savedVersion = savedVersion;
+  else (turn ?? book.originalTurn).candidates.push({ route, savedVersion, title: '上一版路线' });
+}
+
 function saveCandidate(turn, index) {
-  const source = turn.result.candidates[index];
+  const entry = turn.candidates[index];
   const book = state.roadbook;
-  const history = book?.previewEdits?.get(source);
-  const working = history?.current;
-  const candidate = working?.route ?? source;
-  const canSave = () => state.roadbook === book && state.turns.includes(turn) && canReviewCandidate(candidate) &&
-    book.previewEdits?.get(source)?.current === working && !working?.issues.length &&
-    book.saved?.route !== candidate && pointInteractions() && currentDiagnostic()?.target !== candidate;
+  const atStart = turn === book.originalTurn;
+  const isOriginal = atStart && index === 0;
+  const working = workingCandidate(entry);
+  const candidate = working?.route ?? entry.route;
+  const canSave = () => state.roadbook === book && (atStart || state.turns.includes(turn)) && canReviewCandidate(entry, candidate) &&
+    workingCandidate(entry) === working && !working?.issues.length &&
+    !sameTrack(book.saved?.route, candidate) && pointInteractions() && currentDiagnostic()?.target !== candidate;
   if (!canSave()) return;
-  const review = verificationIssues(candidate).map(({ label, status, detail }) => ({ label, status, detail }));
+  const priorVerification = savedVersionOf(entry, candidate)?.verification;
+  const review = priorVerification?.length ? [] :
+    verificationIssues(candidate).map(({ label, status, detail }) => ({ label, status, detail }));
   const save = () => {
     if (!canSave()) return;
+    const resultTurn = atStart ? state.turns.findLast(item => item.candidates?.length) : turn;
+    const appliedContext = candidateContext(turn, entry, candidate);
+    const history = book.previewEdits?.get(entry);
+    if (history) { history.undo.length = 0; history.redo.length = 0; }
+    cancelPlanning();
+    retainSavedCandidate(book, resultTurn);
     state.revision++;
     state.active = candidate;
     state.points = [...candidate.points];
@@ -731,11 +782,10 @@ function saveCandidate(turn, index) {
     state.routeError = '';
     state.routeIssues = [];
     book.diagnostic = null;
-    state.appliedContext = candidateContext(turn, candidate);
+    state.appliedContext = appliedContext;
     state.context = state.appliedContext;
-    if (history) { history.undo.length = 0; history.redo.length = 0; }
-    cancelPlanning();
-    commitRoadbook(review.length ? review : undefined);
+    commitRoadbook(priorVerification ?? (review.length ? review : undefined));
+    if (!isOriginal || sameTrack(entry.route, candidate)) entry.savedVersion = book.saved;
     renderPlan(); renderRoute(); state.map?.fit();
   };
   const overwrite = state.dirty && (book.saved || turn.revision !== state.revision);
@@ -767,15 +817,15 @@ function saveCandidate(turn, index) {
   }
 }
 
-const candidateTitle = (candidate, index) => candidate.loop ? `环线 ${index + 1}` : `终点 · ${destinationOf(candidate)}`;
+const candidateTitle = (entry, candidate, index) => entry.title ?? (candidate.loop ? `环线 ${index + 1}` : `终点 · ${destinationOf(candidate)}`);
 
-function renderCandidate(turn, source, index) {
+function renderCandidate(turn, entry, index) {
   const saved = state.roadbook?.saved;
-  const working = state.roadbook?.previewEdits?.get(source)?.current;
-  const candidate = working?.route ?? source;
+  const working = workingCandidate(entry);
+  const candidate = working?.route ?? entry.route;
   const selected = state.preview?.turn === turn && state.preview.index === index;
   const card = item('article', selected ? 'candidate selected' : 'candidate');
-  const title = candidateTitle(candidate, index);
+  const title = candidateTitle(entry, candidate, index);
   card.append(item('h3', '', title));
   card.append(item('p', 'score', `${asKm(candidate.distance)} km · ${candidate.climb === null ? '爬升待核实' : '预估爬升 ' + Math.round(candidate.climb) + ' m'}`));
   const via = candidate.points.slice(1, candidate.loop ? undefined : -1);
@@ -793,13 +843,17 @@ function renderCandidate(turn, source, index) {
       points.append(button);
     });
     card.append(points);
-  } else if (via.length) card.append(item('p', 'candidate-via', '途经 ' + via.map(pointLabel).join('、')));
+  } else {
+    if (entry.title) card.append(item('p', 'candidate-via', routeEndpoints(candidate)));
+    if (via.length) card.append(item('p', 'candidate-via', '途经 ' + via.map(pointLabel).join('、')));
+  }
   const rules = item('ul');
-  for (const rule of candidate.rules) {
+  const candidateRules = candidate.rules ?? savedVersionOf(entry, candidate)?.verification ?? [];
+  for (const rule of candidateRules) {
     const needsReview = rule.status === 'fail' || rule.status === 'unknown';
     rules.append(item('li', rule.status, needsReview ? verificationReason(rule) : rule.label + ' · ' + rule.detail));
   }
-  if (candidate.rules.length) card.append(rules);
+  if (candidateRules.length) card.append(rules);
   const buttons = item('div', 'candidate-actions');
   const preview = action(selected ? '结束预览' : '预览', 'button secondary', () => {
     showPreview(turn, selected ? null : index);
@@ -809,11 +863,11 @@ function renderCandidate(turn, source, index) {
   });
   preview.disabled = state.planning || state.pending || state.previousView;
   buttons.append(preview);
-  if (saved?.route === candidate) {
+  if (sameTrack(saved?.route, candidate)) {
     buttons.append(item('span', 'candidate-saved', saved.verification?.length ? '已保存 · 用户已核实' : '已保存'));
   } else {
-    const save = action(candidateSaveLabel(candidate, saved, '保存路线'), 'button dark', () => saveCandidate(turn, index));
-    save.disabled = !canReviewCandidate(candidate) || !pointInteractions() ||
+    const save = action(candidateSaveLabel(entry, candidate, saved, '保存路线'), 'button dark', () => saveCandidate(turn, index));
+    save.disabled = !canReviewCandidate(entry, candidate) || !pointInteractions() ||
       Boolean(working?.issues.length) || currentDiagnostic()?.target === candidate;
     buttons.append(save);
   }
@@ -865,18 +919,20 @@ function renderPrompts() {
 function renderPlan(follow = false) {
   const log = $('agent-results');
   const latest = state.turns.at(-1);
+  const book = state.roadbook;
+  const original = book?.originalTurn;
   const scrollTop = log.scrollTop;
   log.replaceChildren();
   $('plan-button').disabled = !state.roadbook || state.planning || state.pending || state.previousView;
   renderPrompts();
-  log.hidden = !latest;
+  log.hidden = !latest && !book?.saved;
   const target = $('agent-target');
   target.replaceChildren();
   const preview = previewRoute();
   const points = editorPoints();
   const picked = selectedIndexFor(points);
   if (preview) {
-    target.append(item('span', '', `修改候选 · ${candidateTitle(preview, state.preview.index)} · ${asKm(preview.distance)} km`),
+    target.append(item('span', '', `修改候选 · ${candidateTitle(previewCandidate(), preview, state.preview.index)} · ${asKm(preview.distance)} km`),
       action('结束预览', 'inline-action', () => showPreview(null, null)));
     target.lastChild.disabled = state.pending || state.planning;
   }
@@ -892,6 +948,27 @@ function renderPlan(follow = false) {
   $('agent-input').placeholder = picked !== null ? '想把这个点改到哪里？' : preview ? '说说想怎么改这条候选路线' :
     state.roadbook?.saved ? '说说想怎么改已保存的路线' :
     latest ? '补充你的骑行需求' : '说说想从哪出发、骑多远';
+  if (original) {
+    original.candidates.forEach((entry, index) => log.append(renderCandidate(original, entry, index)));
+  } else if (book?.saved) {
+    const card = item('article', 'candidate');
+    card.append(item('h3', '', '原路线'), item('p', 'candidate-via', routeEndpoints(book.saved)));
+    const status = item('p', 'score', state.routeError || '正在加载路线…');
+    status.setAttribute('role', 'status');
+    card.append(status);
+    if (state.routeError && !state.dirty) {
+      const buttons = item('div', 'candidate-actions');
+      buttons.append(action('重试', 'button secondary', () => {
+        state.pending = true;
+        state.routeError = '';
+        state.routeIssues = [];
+        renderPlan(); renderRoute();
+        calculateRoute();
+      }));
+      card.append(buttons);
+    }
+    log.append(card);
+  }
   for (const turn of state.turns) {
     const entry = item('div', 'agent-turn');
     entry.append(item('p', 'agent-request', turn.prompt));
@@ -916,7 +993,7 @@ function renderPlan(follow = false) {
         }
       }
     }
-    const candidates = turn.result?.candidates ?? [];
+    const candidates = turn.candidates ?? [];
     if (candidates.length) {
       const details = item('details', 'agent-candidates');
       details.open = turn.expanded ?? (turn === latest || state.preview?.turn === turn);
@@ -931,7 +1008,7 @@ function renderPlan(follow = false) {
   }
   const lastEntry = log.lastElementChild;
   log.scrollTop = follow && lastEntry ? lastEntry.offsetTop : scrollTop;
-  if (follow) $('agent-announcement').textContent = latest?.pending
+  if (follow || !latest) $('agent-announcement').textContent = latest?.pending
     ? '正在规划路线' : latest?.result?.question ?? '';
 }
 
@@ -963,14 +1040,17 @@ async function runPlan(query, continuation = null) {
   }
   if (!turn.pending) return;
   const editor = state.roadbook === book ? state : book;
-  Object.assign(turn, { result, failed, pending: false });
+  const candidates = result.candidates ?? [];
+  Object.assign(turn, { result, failed, pending: false, candidates: candidates.map(route => ({ route })) });
   editor.planning = false;
   if (result.issues?.length) book.diagnostic = { target: targetRoute, issues: result.issues };
   if (!failed) editor.context = result.context;
-  const candidates = result.candidates;
-  if (candidates?.length && (editor.panel === 'ai' || turn.base.target === 'preview')) {
+  if (candidates.length && (editor.panel === 'ai' || turn.base.target === 'preview')) {
     const usable = candidates.findIndex(route => route.canApply);
-    if (editor.preview) editor.preview.turn.expanded = false;
+    if (editor.preview) {
+      resetOriginalPreview(book, editor.preview);
+      editor.preview.turn.expanded = false;
+    }
     editor.preview = { turn, index: Math.max(0, usable) };
     editor.selection = null;
     editor.choosing = false;
@@ -1112,7 +1192,7 @@ $('edit-roadbook').addEventListener('click', () => {
 $('save-roadbook').addEventListener('click', () => {
   if (state.preview) return saveCandidate(state.preview.turn, state.preview.index);
   commitRoadbook();
-  renderRoute();
+  renderPlan(); renderRoute();
 });
 $('manual-end-preview').addEventListener('click', () => showPreview(null, null));
 for (const direction of ['undo', 'redo']) {
