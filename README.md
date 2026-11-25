@@ -2,6 +2,21 @@
 
 独立的骑行路线编辑器。可以在地图上创建和修改路线，也可以用自然语言生成候选。说「终点不限」时，助手会查找可骑达的单程终点。每份路书只保留一个已保存版本，可以从候选中替换。预览时，AI 对话和手动编辑以当前候选为目标。可以点选起点、终点或途经点后请 AI 调整并生成新候选。直接拖动、替换或删除点位会更新当前编辑版本，支持撤回、重做。确认保存后才更新路书。对话和编辑历史随当前页面保留。
 
+## 快速开始
+
+需要 Node.js 22 或以上版本。
+
+```sh
+git clone https://github.com/yininglee/cycler-roadbook.git
+cd cycler-roadbook
+npm ci
+npm run dev
+```
+
+打开 [本地演示](http://127.0.0.1:4319)，使用杭州演示数据体验路线规划、地图编辑和 GPX 下载。演示模式无需 API Key。使用真实地图和模型时，请按[服务配置](#服务配置)填写自己的 Key。
+
+端口占用时可用 `PORT=4320 npm run dev`。开发服务会在后端代码变动时自动重启。运行 `npm run check` 可执行语法检查和自动化测试。
+
 ## 核心功能
 
 以下截图以配置高德地图后的杭州骑行路线为例。
@@ -30,17 +45,7 @@
 
 ![GPX 导出预览对照原路书和导出轨迹，侧栏展示两者的里程和预估爬升](docs/screenshots/gpx-preview.png)
 
-## 本地运行
-
-需要 Node.js 22 或以上版本。
-
-```sh
-npm ci
-npm run dev
-npm run check
-```
-
-默认地址为 `http://127.0.0.1:4319`。端口占用时可用 `PORT=4320 npm run dev`。开发服务会在后端代码变动时自动重启。
+## 使用说明
 
 点击「新建」会在「我的路书」添加并选中一条空白路线。每条路线有自己的编辑内容和 AI 对话。再次点击选中的路线会关闭编辑区并扩展地图。路线列表和已保存的点位保存在当前浏览器。刷新时优先恢复服务端缓存的轨迹，缓存失效时按已保存点位重新算路。未保存的修改和对话在当前页面内随路线保留。
 
@@ -68,3 +73,7 @@ npm run check
 本地个人使用默认接入 FOSSGIS 公共骑行算路服务，无需新 Key。服务会收到用于算路的点位坐标。若点位附近没有可接入的骑行路网，请调整该点后重试。如需使用自己的 OSRM 骑行实例，在 `.env.local` 写入 `GPX_OSRM_BIKE_URL`，其值为提供 `/route/v1/driving/` 的自行车配置实例根地址。 [FOSSGIS 使用及隐私说明](https://routing.openstreetmap.de/about.html) · [OpenStreetMap 路网署名](https://www.openstreetmap.org/copyright) · [GPX 1.1 规范](https://www.topografix.com/GPX/1/1/)
 
 [产品需求与发布验收](骑行路书制作Agent-workspace/prd/PRD.md)
+
+## 许可证
+
+本项目的原创代码和文档采用 [MIT 许可证](LICENSE)。第三方依赖、截图中的地图内容、地图数据和外部服务适用各自的许可证或服务条款。
