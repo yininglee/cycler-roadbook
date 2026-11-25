@@ -72,8 +72,6 @@ npm run dev
 
 本地个人使用默认接入 FOSSGIS 公共骑行算路服务，无需新 Key。服务会收到用于算路的点位坐标。若点位附近没有可接入的骑行路网，请调整该点后重试。如需使用自己的 OSRM 骑行实例，在 `.env.local` 写入 `GPX_OSRM_BIKE_URL`，其值为提供 `/route/v1/driving/` 的自行车配置实例根地址。 [FOSSGIS 使用及隐私说明](https://routing.openstreetmap.de/about.html) · [OpenStreetMap 路网署名](https://www.openstreetmap.org/copyright) · [GPX 1.1 规范](https://www.topografix.com/GPX/1/1/)
 
-[产品需求与发布验收](骑行路书制作Agent-workspace/prd/PRD.md)
-
 ## 许可证
 
 本项目的原创代码和文档采用 [MIT 许可证](LICENSE)。第三方依赖、截图中的地图内容、地图数据和外部服务适用各自的许可证或服务条款。
